@@ -34,6 +34,18 @@ export function DevicePanel({ state, session, supported }: Props) {
     }
   }
 
+  async function onSwitch() {
+    setError(null);
+    setBusy(true);
+    try {
+      await getAdbClient().switchDevice();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <aside className="sidebar">
       <div>
@@ -67,9 +79,14 @@ export function DevicePanel({ state, session, supported }: Props) {
 
       <div>
         {state.kind === "connected" && session ? (
-          <button onClick={onDisconnect} disabled={busy} style={{ width: "100%" }}>
-            Disconnect
-          </button>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <button onClick={onDisconnect} disabled={busy} style={{ width: "100%" }}>
+              Disconnect
+            </button>
+            <button onClick={onSwitch} disabled={busy} style={{ width: "100%" }}>
+              Switch device
+            </button>
+          </div>
         ) : (
           <button
             className="primary"

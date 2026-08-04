@@ -6,13 +6,16 @@ import { ShellPanel } from "@/components/ShellPanel";
 import { ApkInstallPanel } from "@/components/ApkInstallPanel";
 import { FileManagerPanel } from "@/components/FileManagerPanel";
 import { ScreenshotPanel } from "@/components/ScreenshotPanel";
+import { AppManagerPanel } from "@/components/AppManagerPanel";
+import { LogcatPanel } from "@/components/LogcatPanel";
+import { WiFiAdbPanel } from "@/components/WiFiAdbPanel";
 import {
   useAdbSession,
   useAdbState,
   useAdbSupported,
 } from "@/lib/use-adb";
 
-type Tab = "shell" | "files" | "screenshot" | "apk";
+type Tab = "shell" | "apps" | "logcat" | "files" | "screenshot" | "apk" | "wifi";
 
 export function Workspace() {
   const state = useAdbState();
@@ -44,6 +47,12 @@ export function Workspace() {
                 <TabButton current={tab} value="shell" onClick={setTab}>
                   Shell
                 </TabButton>
+                <TabButton current={tab} value="apps" onClick={setTab}>
+                  Apps
+                </TabButton>
+                <TabButton current={tab} value="logcat" onClick={setTab}>
+                  Logcat
+                </TabButton>
                 <TabButton current={tab} value="files" onClick={setTab}>
                   Files
                 </TabButton>
@@ -53,14 +62,20 @@ export function Workspace() {
                 <TabButton current={tab} value="apk" onClick={setTab}>
                   Install APK
                 </TabButton>
+                <TabButton current={tab} value="wifi" onClick={setTab}>
+                  Wi-Fi ADB
+                </TabButton>
               </nav>
 
               <div style={{ height: 24 }} />
 
               {tab === "shell" && <ShellPanel session={session} />}
+              {tab === "apps" && <AppManagerPanel session={session} />}
+              {tab === "logcat" && <LogcatPanel session={session} />}
               {tab === "files" && <FileManagerPanel session={session} />}
               {tab === "screenshot" && <ScreenshotPanel session={session} />}
               {tab === "apk" && <ApkInstallPanel session={session} />}
+              {tab === "wifi" && <WiFiAdbPanel session={session} />}
             </>
           )}
         </div>

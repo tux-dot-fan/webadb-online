@@ -152,6 +152,175 @@ export class AdbClient {
     this.setState({ kind: "disconnected" });
   }
 
+  /**
+   * Switch to a different device: tears down the current session, then prompts
+   * for a new one. Equivalent to disconnect() + connect() but exposed as a
+   * single user-facing operation so the UI can label it correctly.
+   */
+  async switchDevice(): Promise<void> {
+    await this.disconnect();
+    return this.connect();
+  }
+
+  /**
+   * Enable ADB-over-WiFi on the connected device. Returns the IP and port the
+   * device will listen on. After this returns, the user can unplug USB and
+   * connect via TCP from another adb client using
+   *   adb connect <ip>:<port>
+   *
+   * Note: this only flips the daemon to listen on TCP. It does NOT replace the
+   * current WebUSB session — the WebADB session remains USB-based. To switch
+   * WebADB to WiFi you'd need a TCP transport, which is out of scope here.
+   */
+  async enableWifiAdb(port = 5555): Promise<string> {
+    const s = this.requireSession();
+    return s.adb.tcpip.setPort(port);
+  }
+
+  /** Disable ADB-over-WiFi on the device. */
+  async disableWifiAdb(): Promise<string> {
+    const s = this.requireSession();
+    return s.adb.tcpip.disable();
+  }
+
+  /**
+   * Get the IP address the device is advertising on its interfaces. Runs
+   * `ip route` and grabs the default gateway's source address — works on
+   * Android without root.
+   */
+  async getDeviceIp(): Promise<string | null> {
+    const s = this.requireSession();
+    try {
+      const out = await s.adb.subprocess.noneProtocol.spawnWaitText([
+        "sh",
+        "-c",
+        // `ip -o addr` gives one line per addr; we grep for global IPv4 and
+        // grab the local address from the `src` field. Skips loopback.
+        "ip -o addr show scope global 2>/dev/null | " +
+          "awk '{print $4}' | cut -d/ -f1 | head -n1",
+      ]);
+      const ip = out.trim();
+      // Validate it looks like an IPv4.
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return ip;
+    } catch {
+      // Fall through to the legacy approach.
+    }
+    // Fallback: parse `ip addr` output (older Android).
+    try {
+      const out = await s.adb.subprocess.noneProtocol.spawnWaitText([
+        "ip",
+        "addr",
+      ]);
+      const m = out.match(/inet (\d{1,3}(?:\.\d{1,3}){3})\//);
+      if (m) return m[1];
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  /**
+   * Run `pm list packages -f` and parse the output. Returns a list of
+   * `{packageName, apkPath}` records. Used by the App manager panel.
+   */
+  async listInstalledPackages(): Promise<PackageInfo[]> {
+    const s = this.requireSession();
+    const out = await s.adb.subprocess.noneProtocol.spawnWaitText([
+      "pm",
+      "list",
+      "packages",
+      "-f",
+      "-3", // -3 = third-party (user-installed) only
+    ]);
+    return parsePackageList(out);
+  }
+
+  /** Uninstall an app by package name. Returns true on success. */
+  async uninstallPackage(packageName: string): Promise<boolean> {
+    const s = this.requireSession();
+    const out = await s.adb.subprocess.noneProtocol.spawnWaitText([
+      "pm",
+      "uninstall",
+      packageName,
+    ]);
+    return /Success/i.test(out);
+  }
+
+  /**
+   * Resolve the main launch activity for a package and launch it. Returns the
+   * Activity Manager output (typically "Starting: Intent { ... }").
+   */
+  async launchPackage(packageName: string): Promise<string> {
+    const s = this.requireSession();
+    // `cmd package resolve-activity --brief <pkg>` prints the activity name on
+    // the last line (e.g. "com.example/.MainActivity"). Using -c android.intent
+    // .category.LAUNCHER restricts to launcher activities.
+    const resolved = await s.adb.subprocess.noneProtocol.spawnWaitText([
+      "cmd",
+      "package",
+      "resolve-activity",
+      "--brief",
+      packageName,
+    ]);
+    const activity = resolved.trim().split("\n").pop()?.trim() ?? "";
+    if (!activity || !activity.includes("/")) {
+      throw new Error(
+        `Couldn't resolve launch activity for ${packageName}. Resolved: "${activity}"`,
+      );
+    }
+    return s.adb.subprocess.noneProtocol.spawnWaitText([
+      "am",
+      "start",
+      "-n",
+      activity,
+    ]);
+  }
+
+  /**
+   * Start a `logcat` process. Caller is responsible for consuming the stream
+   * and killing the process. Used by the Logcat panel — it spawns, pipes
+   * stdout into the UI, and kills on unmount.
+   *
+   * Returns a getter for the async iterable (lazy: calling it starts the
+   * reader). The reader is a single-shot AsyncIterable — create a new one if
+   * you need to consume the stream again.
+   */
+  async startLogcat(args: string[] = []): Promise<{
+    kill(): void;
+    stream: AsyncIterableIterator<Uint8Array>;
+  }> {
+    const s = this.requireSession();
+    const shell = s.adb.subprocess.shellProtocol;
+    if (!shell) {
+      throw new Error("Device doesn't support Shell V2 protocol");
+    }
+    const proc = await shell.spawn(["logcat", ...args]);
+    // Wrap the native ReadableStream into our AsyncIterableIterator helper.
+    // We do the conversion eagerly here so the caller can simply `for await`
+    // over `stream` without having to call a function.
+    const iterable = streamFromAsyncIterable(
+      proc.stdout as unknown as ReadableStream<Uint8Array>,
+    );
+    const killFn = () => {
+      try {
+        void proc.kill();
+      } catch {
+        // ignore
+      }
+    };
+    return {
+      kill: killFn,
+      stream: iterable,
+    };
+  }
+
+  private requireSession(): AdbSession {
+    if (!this.session) {
+      throw new Error("Not connected to a device");
+    }
+    return this.session;
+  }
+
   private watchDisconnect(
     device: AdbDaemonWebUsbDevice,
     transport: AdbDaemonTransport,
@@ -188,3 +357,54 @@ export function getAdbClient(): AdbClient {
 
 export { AdbDefaultInterfaceFilter };
 export type { AdbSession as AdbSessionType };
+
+// ---------- Helpers ----------
+
+export interface PackageInfo {
+  /** e.g. "com.example.app" — last path component of the APK path. */
+  packageName: string;
+  /** Absolute path to the installed APK on the device. */
+  apkPath: string;
+}
+
+/**
+ * Parses `pm list packages -f` output. Each line looks like:
+ *   package:/data/app/~~xyz==/com.example.app==/base.apk com.example.app
+ * The first token is "package:" (with a leading "package:" prefix that some
+ * Android versions include), then the path, then a space, then the package
+ * name. We pull out the path and the package name; the package name is
+ * duplicated in the path's basename in many builds, but the trailing token is
+ * authoritative.
+ */
+function parsePackageList(text: string): PackageInfo[] {
+  const out: PackageInfo[] = [];
+  for (const line of text.split("\n")) {
+    const m = line.match(/^(?:package:)?(\S+)\s+(\S+)/);
+    if (!m) continue;
+    const apkPath = m[1];
+    const packageName = m[2];
+    if (!packageName.includes(".")) continue; // sanity check
+    out.push({ packageName, apkPath });
+  }
+  return out;
+}
+
+/**
+ * Convert a Web ReadableStream<Uint8Array> to an async iterable. Used for
+ * logcat streaming — React effects can't consume streams directly, but they
+ * can `for await` over async iterables.
+ */
+async function* streamFromAsyncIterable(
+  stream: ReadableStream<Uint8Array>,
+): AsyncIterableIterator<Uint8Array> {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      if (value) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}

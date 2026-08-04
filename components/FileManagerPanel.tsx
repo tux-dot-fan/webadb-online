@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ChangeEvent } from "react";
 import type { AdbSession } from "@/lib/adb-client";
 import { LinuxFileType } from "@yume-chan/adb";
 
@@ -21,6 +21,8 @@ export function FileManagerPanel({ session }: Props) {
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
 
   async function list(path: string) {
     setBusy(true);
@@ -76,6 +78,39 @@ export function FileManagerPanel({ session }: Props) {
     return "/" + parts.join("/");
   }
 
+  async function onUpload(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    e.target.value = ""; // allow re-selecting the same file
+    if (!f) return;
+    setUploading(true);
+    setUploadStatus(`Reading ${f.name} (${formatSize(f.size)})…`);
+    setError(null);
+    try {
+      const buf = new Uint8Array(await f.arrayBuffer());
+      const remoteName = f.name.replace(/[^A-Za-z0-9._-]/g, "_");
+      const remotePath = `${cwd === "/" ? "" : cwd}/${remoteName}`;
+      setUploadStatus(`Uploading to ${remotePath}…`);
+      const sync = await session.adb.sync();
+      await sync.write({
+        filename: remotePath,
+        file: new ReadableStream({
+          start(controller) {
+            controller.enqueue(buf);
+            controller.close();
+          },
+        }) as unknown as Parameters<typeof sync.write>[0]["file"],
+      });
+      setUploadStatus(`Uploaded → ${remotePath}`);
+      // Refresh the listing.
+      await list(cwd);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setUploadStatus(null);
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <section className="panel">
       <h2>Files</h2>
@@ -105,7 +140,33 @@ export function FileManagerPanel({ session }: Props) {
         <button onClick={() => void list(cwd)} disabled={busy} title="Refresh">
           ⟳
         </button>
+        <label
+          style={{
+            display: "inline-block",
+            cursor: uploading ? "not-allowed" : "pointer",
+            opacity: uploading ? 0.6 : 1,
+            padding: "8px 14px",
+            borderRadius: 6,
+            background: "var(--bg-elev-2)",
+            border: "1px solid var(--border)",
+            fontSize: 14,
+          }}
+        >
+          {uploading ? "Uploading…" : "Upload"}
+          <input
+            type="file"
+            onChange={(e) => void onUpload(e)}
+            disabled={uploading}
+            style={{ display: "none" }}
+          />
+        </label>
       </div>
+
+      {uploadStatus && (
+        <div className="banner info" style={{ margin: "0 0 12px" }}>
+          {uploadStatus}
+        </div>
+      )}
 
       {error && (
         <div className="banner error" style={{ margin: "0 0 12px" }}>
