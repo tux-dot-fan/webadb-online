@@ -54,27 +54,38 @@ npm run build        # produces ./out (static)
 
 ## Deploy to Cloudflare Pages
 
-### One-off
+### Option A: Connect to GitHub (recommended)
+
+1. Push this repo to GitHub (already done: https://github.com/tux-dot-fan/webadb-online)
+2. Open https://dash.cloudflare.com/ → **Workers & Pages** → Create application → **Pages** → **Connect to Git**
+3. Select `tux-dot-fan/webadb-online`
+4. Use these **exact** build settings (these are NOT the Cloudflare auto-detected defaults — `Build output directory` MUST be `out`, not `.next`):
+
+   | Setting | Value |
+   |---|---|
+   | Production branch | `main` |
+   | Framework preset | `Next.js` |
+   | Build command | `npm run build` |
+   | **Build output directory** | **`out`** ⚠️ critical |
+   | Root directory | (leave empty) |
+   | Node version | `22` |
+
+5. Click **Save and Deploy**. First build takes ~2 minutes.
+6. After the first deploy, attach `webadb.online` and `www.webadb.online` as
+   custom domains in the dashboard. The DNS zone must already be on
+   Cloudflare for the certificate to issue.
+
+Every push to `main` rebuilds and deploys automatically.
+
+### Option B: Direct upload via Wrangler
 
 ```bash
+npm run build
 npx wrangler login
 npx wrangler pages deploy ./out --project-name webadb-online
 ```
 
-### Automatic (recommended)
-
-Connect this repo to Cloudflare Pages in the dashboard. Set:
-- **Build command**: `npm run build`
-- **Build output directory**: `out`
-- **Node version**: 22
-
-Every push to `main` will rebuild and deploy.
-
-### Custom domain
-
-Once the project is created, attach `webadb.online` as a custom domain in
-the Cloudflare dashboard. The apex domain must already be on Cloudflare's
-nameservers for the certificate to be issued automatically.
+You'll need a Cloudflare API token with Pages edit permission.
 
 ## Architecture
 
