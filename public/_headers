@@ -1,0 +1,43 @@
+/*
+ * Cross-origin isolation — required for SharedArrayBuffer / high-resolution
+ * timers used by some features of ya-webadb. Without these headers, scrcpy
+ * video decoding and framebuffer capture won't work.
+ *
+ * Cloudflare Pages serves these on every response in the project, including
+ * static HTML, JS chunks, and worker invocations.
+ *
+ * Cross-Origin-Embedder-Policy: require-corp
+ *   Tells the browser this page may only embed resources that explicitly
+ *   opt-in via CORP (same-origin, same-site, or cross-origin).
+ *
+ * Cross-Origin-Opener-Policy: same-origin
+ *   Isolates the browsing context group from other origins. Combined with
+ *   COEP, this unlocks `crossOriginIsolated === true` in JS.
+ *
+ * Cross-Origin-Resource-Policy: same-origin
+ *   Allows same-origin pages (e.g. /_next chunks) to be embedded without
+ *   needing every third-party CDN to set CORP. Since webadb.online has no
+ *   third-party assets (everything is bundled), same-origin is the strictest
+ *   safe choice.
+ */
+
+/
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+
+# Long-cache hashed assets — Next.js generates content-hashed filenames so
+# they can be cached forever.
+/_next/static/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Don't cache HTML — it changes per-deploy.
+/index.html
+  Cache-Control: no-cache
+
+# Security headers, applied globally.
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: usb=(self)
