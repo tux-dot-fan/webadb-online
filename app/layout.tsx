@@ -78,7 +78,16 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
-  themeColor: "#0b0f17",
+  // Two themeColor entries (one per media query) so the browser address
+  // bar / status bar matches whichever theme is active. The light variant
+  // is the default; the dark variant is shown only when the user has
+  // explicitly enabled the dark theme via the toolbar toggle. We don't
+  // auto-honor `prefers-color-scheme: dark` because the user's previous
+  // webadb.online preference is more meaningful (see ThemeToggle.tsx).
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f7f9fc" },
+    { media: "(prefers-color-scheme: dark)", color: "#0b0f17" },
+  ],
 };
 
 const jsonLd = {
@@ -118,6 +127,16 @@ export default function RootLayout({
   return (
     <html lang="en">
       <head>
+        {/* Resolve the user's theme synchronously, BEFORE React hydrates,
+            so the page paints in the right colors on the very first frame.
+            Without this the user sees a light flash for ~100 ms while the
+            JS bundle loads. The logic mirrors `resolveInitial()` in
+            components/ThemeToggle.tsx — keep them in sync. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var k="webadb.online:theme";var v=localStorage.getItem(k);var t=(v==="light"||v==="dark")?v:(window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.setAttribute("data-theme",t);}catch(e){}})();`,
+          }}
+        />
         <link rel="canonical" href={SITE_URL} />
         <script
           type="application/ld+json"

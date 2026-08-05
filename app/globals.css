@@ -1,4 +1,32 @@
 :root {
+  /* Light theme (default). webadb.online is a developer tool — most users
+     prefer a light background to match their editor / terminal. The dark
+     theme is opt-in via the toolbar toggle (and via prefers-color-scheme
+     when no explicit choice has been stored). */
+  --bg: #f7f9fc;
+  --bg-elev: #ffffff;
+  --bg-elev-2: #eef2f8;
+  --border: #d4dbe6;
+  --text: #1c2433;
+  --text-dim: #5a657a;
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --danger: #dc2626;
+  --success: #15803d;
+  --warning: #b45309;
+  /* Text color that sits on top of `--accent` (the primary button fill).
+     Light accent (blue-600) needs white text for AA contrast; dark accent
+     (sky-500) needs near-black text. Defining both here means primary
+     buttons stay readable in either theme without per-component overrides. */
+  --on-accent: #ffffff;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+}
+
+/* Dark theme: explicitly chosen by the user. We don't honor
+   `prefers-color-scheme: dark` automatically because the user's previous
+   webadb.online preference is more meaningful than the OS theme (which can
+   follow the time of day and flip unexpectedly mid-session). */
+:root[data-theme="dark"] {
   --bg: #0b0f17;
   --bg-elev: #111726;
   --bg-elev-2: #1a2236;
@@ -10,7 +38,7 @@
   --danger: #ff6b6b;
   --success: #51d88a;
   --warning: #ffb547;
-  --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --on-accent: #0b0f17;
 }
 
 * {
@@ -58,7 +86,7 @@ button:disabled {
 button.primary {
   background: var(--accent);
   border-color: var(--accent);
-  color: #0b0f17;
+  color: var(--on-accent);
   font-weight: 600;
 }
 button.primary:hover:not(:disabled) {
@@ -128,12 +156,33 @@ header.site-header .brand .logo {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #0b0f17;
+  color: var(--on-accent);
   font-weight: 800;
 }
 header.site-header .meta {
   color: var(--text-dim);
   font-size: 13px;
+}
+header.site-header .header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+header.site-header .theme-toggle {
+  /* Compact icon button — square, centered glyph, no border on hover
+     distraction. Inherits font/colors from the page, so it adapts to
+     both themes automatically. */
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+header.site-header .theme-toggle:hover:not(:disabled) {
+  background: var(--bg-elev-2);
 }
 
 main.workspace {
@@ -365,7 +414,12 @@ section.panel .panel-desc {
 .hero h1 {
   font-size: clamp(32px, 5vw, 48px);
   margin: 0 0 16px;
-  background: linear-gradient(135deg, #ffffff 30%, var(--accent) 100%);
+  /* Gradient text: start dim, end in the accent color. Using
+     `--text-dim` (rather than a literal `#fff` like we used to) means the
+     start of the gradient stays readable on the light theme (where the
+     page background is white) AND on the dark theme (where the page
+     background is near-black). */
+  background: linear-gradient(135deg, var(--text-dim) 30%, var(--accent) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
