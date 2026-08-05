@@ -2878,3 +2878,86 @@ section.panel .panel-desc {
   font-size: 3em;
   opacity: 0.5;
 }
+
+/* ── Overlay apps (Apps / Search / Settings) ────────────────────────── */
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 10000;
+  animation: overlay-fade-in 0.14s ease-out;
+}
+@keyframes overlay-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Fullscreen launcher: dark dim background, launcher panel pinned
+   near the top of the screen like macOS Launchpad. */
+.overlay-fullscreen {
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 80px 24px 24px;
+  overflow-y: auto;
+}
+.overlay-launcher {
+  width: 100%;
+  max-width: 880px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  animation: overlay-pop-in 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
+}
+@keyframes overlay-pop-in {
+  from { transform: translateY(20px) scale(0.97); opacity: 0; }
+  to   { transform: translateY(0)    scale(1);    opacity: 1; }
+}
+
+/* Centered modals (Search / Settings). */
+.overlay-modal {
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 100px 24px 24px;
+  overflow-y: auto;
+}
+.overlay-dash {
+  width: 100%;
+  max-width: 560px;
+  background: var(--bg-elev);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  animation: overlay-pop-in 0.16s cubic-bezier(0.34, 1.4, 0.64, 1);
+  /* Dash owns its own internal scrollable list; no chrome. */
+}
+.overlay-settings {
+  width: 100%;
+  max-width: 620px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+  animation: overlay-pop-in 0.18s cubic-bezier(0.34, 1.4, 0.64, 1);
+  /* No title bar / window chrome — Settings is a modal surface. */
+}
+
+/* ── Hide the launcher/dash/settings "panels" inside overlays ─────────
+   When the apps are rendered inside an overlay, their own outer <div>
+   shouldn't add padding or background — the overlay shell already
+   supplies that. Override the wrappers so we get a single seamless
+   card. */
+.overlay .launcher-app,
+.overlay .dash-app,
+.overlay .settings-app {
+  padding: 0;
+  background: transparent;
+}

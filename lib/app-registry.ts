@@ -61,6 +61,14 @@ export interface AppDefinition {
    */
   alwaysEnabled?: boolean;
   /**
+   * Whether this app renders as a special overlay instead of a regular
+   * draggable window. Overlays are fullscreen (launcher) or centered
+   * modals (dash, settings) and are rendered above all windows. They
+   * never appear in the `windows` map — they're managed by separate
+   * overlay state in Workspace.
+   */
+  isOverlay?: boolean;
+  /**
    * Whether this app needs an ADB session to function. If false, the window
    * is allowed to render before a device is connected (used by Launcher /
    * Dash / Settings which are local-state-only).
@@ -101,6 +109,8 @@ export const REGISTERED_APPS: AppDefinition[] = [
     allowMultipleWindows: false,
     requiresSession: false,
     alwaysEnabled: true,
+    /** Apps, Search, and Settings are special overlays — not regular windows. */
+    isOverlay: true,
     description: "Browse all available apps (Launchpad-style).",
   },
   {
@@ -114,6 +124,7 @@ export const REGISTERED_APPS: AppDefinition[] = [
     allowMultipleWindows: false,
     requiresSession: false,
     alwaysEnabled: true,
+    isOverlay: true,
     description: "Search across apps, files, and shell commands (⌘K).",
   },
   {
@@ -226,6 +237,7 @@ export const REGISTERED_APPS: AppDefinition[] = [
     allowMultipleWindows: false,
     requiresSession: false,
     alwaysEnabled: true,
+    isOverlay: true,
     description: "Configure which apps appear and launch on startup.",
   },
 ];

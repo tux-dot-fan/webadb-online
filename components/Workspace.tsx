@@ -8,6 +8,9 @@ import {
   useAdbSupported,
 } from "@/lib/use-adb";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { LauncherApp } from "@/components/LauncherApp";
+import { DashApp } from "@/components/DashApp";
+import { SettingsApp } from "@/components/SettingsApp";
 import {
   REGISTERED_APPS, getApp,
   loadEnabled, loadOverrides,
@@ -148,6 +151,51 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
     return Math.max(1, startups.length);
   });
 
+  // ── Overlay state (Apps / Search / Settings) ─────────────────────────
+  // These three apps render as floating overlays above all windows rather
+  // than as draggable windows with a title bar. Each is a single boolean:
+  // when true, the overlay is visible; clicking an item inside the
+  // overlay (e.g. a launcher tile) closes it and opens / focuses the
+  // target app.
+
+  const [launcherOpen, setLauncherOpen] = useState(false);
+  const [dashOpen, setDashOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  /**
+   * Open or focus one of the overlay apps. If the overlay is already
+   * visible this is a no-op (the overlay manages its own dismissal). If
+   * it's hidden, we show it and bring it to the front of the overlay
+   * stack by closing the others — only one overlay is visible at a time.
+   */
+  const toggleOverlay = useCallback((id: "launcher" | "dash" | "settings") => {
+    if (id === "launcher") {
+      setLauncherOpen((v) => {
+        const next = !v;
+        if (next) { setDashOpen(false); setSettingsOpen(false); }
+        return next;
+      });
+    } else if (id === "dash") {
+      setDashOpen((v) => {
+        const next = !v;
+        if (next) { setLauncherOpen(false); setSettingsOpen(false); }
+        return next;
+      });
+    } else {
+      setSettingsOpen((v) => {
+        const next = !v;
+        if (next) { setLauncherOpen(false); setDashOpen(false); }
+        return next;
+      });
+    }
+  }, []);
+
+  const closeOverlay = useCallback((id: "launcher" | "dash" | "settings") => {
+    if (id === "launcher") setLauncherOpen(false);
+    else if (id === "dash") setDashOpen(false);
+    else setSettingsOpen(false);
+  }, []);
+
   // Track which apps have at least one open window (for Dock dot indicator)
   const [activeApps, setActiveApps] = useState<Set<string>>(() => {
     const s = new Set<string>();
@@ -165,15 +213,36 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
 
   // ── Window lifecycle ─────────────────────────────────────────────────────
 
-  const openWindow = useCallback((appId: string, opts?: { shellCmd?: string }) => {
+  const openWindow = useCallback((
+    appId: string,
+    opts?: { shellCmd?: string; minimizeIfOpen?: boolean },
+  ) => {
     const app = getApp(appId);
     if (!app) return;
     if (!enabledApps.has(appId)) return;
+
+    // Overlay apps (Apps / Search / Settings) don't use the windows map —
+    // they're floating fullscreen / modal layers rendered above windows.
+    if (app.isOverlay) {
+      toggleOverlay(appId as "launcher" | "dash" | "settings");
+      return;
+    }
 
     // Single-window apps: focus the existing window instead of opening a new one.
     if (app.allowMultipleWindows === false) {
       const existing = [...windows.entries()].find(([, w]) => w.appId === appId);
       if (existing) {
+        // When invoked from the launcher (minimizeIfOpen), minimize the
+        // existing window instead of bringing it forward. The launcher
+        // contract is "click an already-running app → minimize it".
+        if (opts?.minimizeIfOpen) {
+          setWindows((prev) => {
+            const next = new Map(prev);
+            next.set(existing[0], { ...existing[1], minimized: true });
+            return next;
+          });
+          return;
+        }
         setWindows((prev) => {
           const next = new Map(prev);
           const w = { ...existing[1], minimized: false };
@@ -519,12 +588,49 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
             );
           })}
         </div>
+
+        {/* ── Overlays (Apps / Search / Settings) ────────────────────────
+            Rendered above all windows. launcher = fullscreen, dash +
+            settings = centered modals. They each get a "minimize on
+            outside click" or "click tile to open" handler. */}
+        {launcherOpen && (
+          <LauncherOverlay
+            onClose={() => setLauncherOpen(false)}
+            onLaunch={(id) => {
+              // Hide the launcher and open the target app. minimizeIfOpen
+              // ensures that clicking an already-running app minimizes
+              // its window instead of bringing it back to focus.
+              setLauncherOpen(false);
+              openWindow(id, { minimizeIfOpen: true });
+            }}
+          />
+        )}
+        {dashOpen && (
+          <DashOverlay
+            onClose={() => setDashOpen(false)}
+            onLaunch={(id) => {
+              setDashOpen(false);
+              openWindow(id);
+            }}
+          />
+        )}
+        {settingsOpen && (
+          <SettingsOverlay onClose={() => setSettingsOpen(false)} />
+        )}
       </div>
 
       {/* ── Dock ─────────────────────────────────────────────────────── */}
       <nav className="dock" role="navigation" aria-label="Applications">
         {dockAppsList.map((app) => {
-          const isActive = activeApps.has(app.id);
+          // For overlay apps (Apps / Search / Settings), "active" means
+          // the overlay is currently visible. For regular apps it means
+          // a window is open. Either way, the dot on the dock icon tells
+          // the user the app is "running".
+          const isActive = app.isOverlay
+            ? (app.id === "launcher" ? launcherOpen
+              : app.id === "dash" ? dashOpen
+              : settingsOpen)
+            : activeApps.has(app.id);
           const isTopApp = topWin?.appId === app.id;
           return (
             <DockItem
@@ -533,6 +639,11 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
               active={isActive}
               focused={isTopApp}
               onClick={() => {
+                if (app.isOverlay) {
+                  // Overlay apps toggle their floating layer.
+                  toggleOverlay(app.id as "launcher" | "dash" | "settings");
+                  return;
+                }
                 if (isActive && app.allowMultipleWindows !== false) {
                   // Focus existing window of this type
                   const existing = [...windows.entries()].find(([, w]) => w.appId === app.id);
@@ -544,6 +655,10 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
               }}
               onRightClick={(e) => {
                 e.preventDefault();
+                if (app.isOverlay) {
+                  toggleOverlay(app.id as "launcher" | "dash" | "settings");
+                  return;
+                }
                 if (app.allowMultipleWindows === false) {
                   openWindow(app.id);
                 } else {
@@ -744,6 +859,91 @@ function DockItem({ app, active, focused, onClick, onRightClick }: DockItemProps
           </button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Overlay apps (Apps / Search / Settings) ────────────────────────────────
+//
+// These three apps render as floating overlays above all windows rather
+// than as regular draggable windows. Each overlay is independent of the
+// `windows` map and renders inside `.desktop-area` so it stays clear of
+// the sidebar and dock.
+
+interface LauncherOverlayProps {
+  onClose: () => void;
+  onLaunch: (appId: string) => void;
+}
+
+function LauncherOverlay({ onClose, onLaunch }: LauncherOverlayProps) {
+  // Esc closes the overlay.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); onClose(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Click on the dim background (but not on the launcher itself) closes.
+  return (
+    <div className="overlay overlay-fullscreen" onClick={(e) => {
+      if (e.target === e.currentTarget) onClose();
+    }}>
+      <div className="overlay-launcher">
+        <LauncherApp onLaunchApp={onLaunch} />
+      </div>
+    </div>
+  );
+}
+
+interface DashOverlayProps {
+  onClose: () => void;
+  onLaunch: (appId: string) => void;
+}
+
+function DashOverlay({ onClose, onLaunch }: DashOverlayProps) {
+  // Esc closes the overlay (Dash handles its own input).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); onClose(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="overlay overlay-modal" onClick={(e) => {
+      if (e.target === e.currentTarget) onClose();
+    }}>
+      <div className="overlay-dash">
+        <DashApp onLaunchApp={onLaunch} />
+      </div>
+    </div>
+  );
+}
+
+interface SettingsOverlayProps {
+  onClose: () => void;
+}
+
+function SettingsOverlay({ onClose }: SettingsOverlayProps) {
+  // Esc closes the overlay.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); onClose(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="overlay overlay-modal" onClick={(e) => {
+      if (e.target === e.currentTarget) onClose();
+    }}>
+      <div className="overlay-settings">
+        <SettingsApp />
+      </div>
     </div>
   );
 }
