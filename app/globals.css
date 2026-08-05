@@ -1509,6 +1509,17 @@ section.panel .panel-desc {
   font-style: italic;
   opacity: 0.7;
 }
+.settings-always-on {
+  flex: 0 0 auto;
+  padding: 3px 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 0.74em;
+  color: var(--fg-muted);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
 .toggle {
   --knob-size: 18px;
   --track-w: 36px;

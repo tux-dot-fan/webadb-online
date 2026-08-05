@@ -49,6 +49,9 @@ function useAppPrefs() {
   }, []);
 
   const toggleEnabled = (id: string) => {
+    // Always-enabled apps can't be disabled (Settings itself, Apps, Search).
+    const app = REGISTERED_APPS.find((a) => a.id === id);
+    if (app?.alwaysEnabled) return;
     setEnabled((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -122,16 +125,28 @@ export function SettingsApp(): React.JSX.Element {
                     <span className="settings-row-desc">{app.description}</span>
                   )}
                 </div>
-                <button
-                  type="button"
-                  className="toggle"
-                  role="switch"
-                  aria-checked={isEnabled}
-                  aria-label={`Enable ${app.title}`}
-                  onClick={() => toggleEnabled(app.id)}
-                >
-                  <span className="toggle-knob" />
-                </button>
+                {app.alwaysEnabled ? (
+                  // Always-on apps (Apps grid, Search, Settings) don't
+                  // expose a toggle — disabling them would lock the user
+                  // out of the very panel they need to re-enable things.
+                  <span
+                    className="settings-always-on"
+                    title="This app is always available."
+                  >
+                    always on
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    className="toggle"
+                    role="switch"
+                    aria-checked={isEnabled}
+                    aria-label={`Enable ${app.title}`}
+                    onClick={() => toggleEnabled(app.id)}
+                  >
+                    <span className="toggle-knob" />
+                  </button>
+                )}
               </div>
 
               {isEnabled && (

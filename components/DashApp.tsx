@@ -101,10 +101,13 @@ export function DashApp({
     };
   }, []);
 
-  // Build result set.
+  // Build result set. Apps flagged `alwaysEnabled` are always shown
+  // regardless of the user's enable/disable preferences — that way the
+  // user can search for Settings and re-enable things even if they
+  // disabled everything via the Settings panel.
   const results: Result[] = useMemo(() => {
     const apps: AppResult[] = REGISTERED_APPS
-      .filter((a) => enabledIds.has(a.id) || a.id === "settings" || a.id === "launcher")
+      .filter((a) => enabledIds.has(a.id) || a.alwaysEnabled === true)
       .filter((a) => fuzzy(`${a.title} ${a.description ?? ""}`, query))
       .map((a) => ({
         kind: "app",

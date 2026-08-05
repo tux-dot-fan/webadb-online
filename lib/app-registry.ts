@@ -54,6 +54,13 @@ export interface AppDefinition {
   /** Short description shown in Settings panel. */
   description?: string;
   /**
+   * Whether this app is always enabled, regardless of the Settings panel.
+   * Use this for core navigation/management surfaces (Apps grid, Search,
+   * Settings itself) — turning them off would leave the user stranded.
+   * Such apps don't get a toggle in the Settings panel.
+   */
+  alwaysEnabled?: boolean;
+  /**
    * Whether this app needs an ADB session to function. If false, the window
    * is allowed to render before a device is connected (used by Launcher /
    * Dash / Settings which are local-state-only).
@@ -93,6 +100,7 @@ export const REGISTERED_APPS: AppDefinition[] = [
     launchOnStartup: false,
     allowMultipleWindows: false,
     requiresSession: false,
+    alwaysEnabled: true,
     description: "Browse all available apps (Launchpad-style).",
   },
   {
@@ -101,10 +109,11 @@ export const REGISTERED_APPS: AppDefinition[] = [
     icon: "🔎",
     Component: DashApp,
     defaultSize: { width: 560, height: 420 },
-    showInDock: false,
+    showInDock: true,
     launchOnStartup: false,
     allowMultipleWindows: false,
     requiresSession: false,
+    alwaysEnabled: true,
     description: "Search across apps, files, and shell commands (⌘K).",
   },
   {
@@ -212,10 +221,11 @@ export const REGISTERED_APPS: AppDefinition[] = [
     icon: "⚙",
     Component: SettingsApp,
     defaultSize: { width: 560, height: 480 },
-    showInDock: true,
+    showInDock: false,
     launchOnStartup: false,
     allowMultipleWindows: false,
     requiresSession: false,
+    alwaysEnabled: true,
     description: "Configure which apps appear and launch on startup.",
   },
 ];
@@ -242,6 +252,15 @@ export function startupApps(): AppDefinition[] {
   return REGISTERED_APPS.filter((a) => a.launchOnStartup === true);
 }
 
+/**
+ * Apps that can't be disabled via the Settings panel — they're core
+ * navigation/management surfaces (Apps grid, Search, Settings itself)
+ * so the user always has access regardless of their config.
+ */
+export function alwaysEnabledApps(): AppDefinition[] {
+  return REGISTERED_APPS.filter((a) => a.alwaysEnabled === true);
+}
+
 // ── Enabled state (Settings → localStorage) ─────────────────────────────────
 
 const ENABLED_STORAGE_KEY = "webadb.apps.enabled";
@@ -265,16 +284,29 @@ export function notifyPrefsChanged(): void {
  * Load enabled-set from localStorage. Missing key → all apps enabled.
  * Stale ids (apps removed since last save) are dropped from the set so the
  * Settings panel never shows orphaned entries.
+ *
+ * Apps flagged `alwaysEnabled` are always included regardless of what's
+ * in localStorage — they're core navigation/management surfaces the
+ * user can't disable.
  */
 export function loadEnabled(defaults: readonly AppDefinition[]): Set<string> {
+  // Always-enabled apps are unconditionally in the set.
+  const alwaysIds = new Set(
+    defaults.filter((a) => a.alwaysEnabled === true).map((a) => a.id),
+  );
   try {
     const raw = localStorage.getItem(ENABLED_STORAGE_KEY);
-    if (raw === null) return new Set(defaults.map((a) => a.id));
+    if (raw === null) {
+      // First-ever load → enable everything, but alwaysIds is already in.
+      return new Set([...alwaysIds, ...defaults.map((a) => a.id)]);
+    }
     const arr = JSON.parse(raw) as string[];
     const validIds = new Set(defaults.map((a) => a.id));
-    return new Set(arr.filter((id) => validIds.has(id)));
+    const fromStorage = new Set(arr.filter((id) => validIds.has(id)));
+    // Merge: always-on + whatever the user has enabled.
+    return new Set([...alwaysIds, ...fromStorage]);
   } catch {
-    return new Set(defaults.map((a) => a.id));
+    return new Set([...alwaysIds, ...defaults.map((a) => a.id)]);
   }
 }
 

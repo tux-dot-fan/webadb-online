@@ -435,31 +435,6 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
           <div className="sidebar-section">
             <p className="sidebar-label">Device</p>
             <DevicePanel state={state} session={session} supported={supported} />
-            <p className="sidebar-label" style={{ marginTop: 12 }}>Quick links</p>
-            <button
-              type="button"
-              className="sidebar-link"
-              onClick={() => openWindow("launcher")}
-              title="Open the Apps launcher"
-            >
-              <span aria-hidden>🚀</span> Apps
-            </button>
-            <button
-              type="button"
-              className="sidebar-link"
-              onClick={() => openWindow("dash")}
-              title="Open search (⌘K)"
-            >
-              <span aria-hidden>🔎</span> Search <kbd>⌘K</kbd>
-            </button>
-            <button
-              type="button"
-              className="sidebar-link"
-              onClick={() => openWindow("settings")}
-              title="Open app settings"
-            >
-              <span aria-hidden>⚙</span> Settings
-            </button>
           </div>
         )}
         <div className="sidebar-footer">

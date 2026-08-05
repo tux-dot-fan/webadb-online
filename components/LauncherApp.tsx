@@ -41,11 +41,11 @@ export function LauncherApp({
     return () => window.removeEventListener("storage", onStorage);
   }, []);
 
-  // Launcher + Settings tiles are always available, even if disabled in
-  // `enabledIds` — they're the entry points to manage that state.
-  const alwaysShow = new Set(["launcher", "settings"]);
+  // Always-on apps (Apps, Search, Settings) are always shown — they're
+  // core navigation surfaces and removing them from the launcher would
+  // make it harder to get back into Settings to re-enable things.
   const tiles = REGISTERED_APPS.filter(
-    (a) => alwaysShow.has(a.id) || enabledIds.has(a.id),
+    (a) => a.alwaysEnabled === true || enabledIds.has(a.id),
   );
 
   return (
