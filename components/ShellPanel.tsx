@@ -283,15 +283,7 @@ export function ShellPanel({ session, initialCommand }: Props) {
       <div
         key={remountKey}
         ref={containerRef}
-        className="xterm-container"
-        style={{
-          height: 480,
-          // Always dark — contrast with both light/dark page themes.
-          background: "#0d1117",
-          border: "1px solid var(--border)",
-          borderRadius: 6,
-          overflow: "hidden",
-        }}
+        className="xterm-container panel-fill"
       />
     </section>
   );

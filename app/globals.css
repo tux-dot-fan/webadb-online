@@ -418,6 +418,18 @@ pre {
 }
 
 /* ── xterm.js overrides — match our theme tokens ───────────────────────── */
+/* The container the xterm canvas mounts into. Sized by its flex parent
+   (`panel-fill`), themed inline by ShellPanel via theme-aware
+   background colors. */
+.xterm-container {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  /* Honor the theme the JS sets on the xterm viewport — the JS swaps
+     this on data-theme changes, but provide a sensible default so the
+     very first paint isn't a white flash. */
+  background: var(--bg);
+}
 .xterm {
   padding: 4px 8px;
 }
@@ -601,6 +613,30 @@ pre {
   flex: 1;
   overflow: auto;
   padding: 14px;
+  min-height: 0;
+}
+
+/* When a panel-fill child is present, make the content stack as a
+   vertical flex column so the panel can grow to fill remaining height.
+   Without this the panel would sit at its intrinsic height and the
+   terminal / preview pane would stay pinned instead of stretching with
+   the window. */
+.window-content:has(> section.panel > .panel-fill) {
+  display: flex;
+  flex-direction: column;
+}
+.window-content > section.panel:has(> .panel-fill) {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  /* min-height: 0 lets the panel shrink below its intrinsic content
+     height when the window gets shorter. */
+  min-height: 0;
+}
+.window-content > section.panel > .panel-fill {
+  flex: 1 1 auto;
+  /* min-height: 0 lets a flex child shrink below its intrinsic size —
+     otherwise the parent would grow past its allocated flex space. */
   min-height: 0;
 }
 
