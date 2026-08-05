@@ -267,17 +267,136 @@ export class AdbClient {
   /**
    * Run `pm list packages -f` and parse the output. Returns a list of
    * `{packageName, apkPath}` records. Used by the App manager panel.
+   *
+   * `includeSystem` defaults to true (every app on the device). Pass
+   * `false` to restrict to third-party (`-3`) apps only — the legacy
+   * behaviour, kept for callers that only care about user-installed apps.
    */
-  async listInstalledPackages(): Promise<PackageInfo[]> {
+  async listInstalledPackages(opts?: { includeSystem?: boolean }): Promise<PackageInfo[]> {
     const s = this.requireSession();
-    const out = await spawnText(s.adb, [
-      "pm",
-      "list",
-      "packages",
-      "-f",
-      "-3", // -3 = third-party (user-installed) only
-    ]);
+    const includeSystem = opts?.includeSystem !== false;
+    const args = ["pm", "list", "packages", "-f"];
+    if (!includeSystem) args.push("-3");
+    const out = await spawnText(s.adb, args);
     return parsePackageList(out);
+  }
+
+  /**
+   * Get a single APK's metadata via `aapt2 dump badging`. Returns `null`
+   * if aapt2 is missing or the APK can't be read.
+   *
+   * `aapt2` is available on virtually every modern Android (since API 24);
+   * the `package` service also exposes `cmd package list packages -f` which
+   * we already use. On older devices where aapt2 isn't on PATH, callers
+   * should fall back to just showing the package name.
+   */
+  async getPackageMeta(apkPath: string): Promise<PackageMeta | null> {
+    const s = this.requireSession();
+    try {
+      const out = await spawnText(s.adb, [
+        "aapt2",
+        "dump",
+        "badging",
+        apkPath,
+      ]);
+      return parseAaptBadging(out);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Detailed package info from `dumpsys package`. Returns parsed fields we
+   * care about: version, install/update times, enabled state, granted
+   * permissions, target/compile SDK, primary ABI, code path. Unavailable
+   * fields are simply absent from the returned object.
+   */
+  async getPackageDetails(pkg: string): Promise<PackageDetails | null> {
+    const s = this.requireSession();
+    try {
+      const out = await spawnText(s.adb, ["dumpsys", "package", pkg]);
+      return parseDumpsysPackage(out, pkg);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * APK size on disk in bytes. Returns null if we can't determine it
+   * (the file may not exist for disabled/system-stub packages).
+   */
+  async getPackageSize(apkPath: string): Promise<number | null> {
+    const s = this.requireSession();
+    try {
+      // `stat -c %s <path>` prints just the size.
+      const out = await spawnText(s.adb, ["stat", "-c", "%s", apkPath]);
+      const n = Number.parseInt(out.trim(), 10);
+      return Number.isFinite(n) ? n : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Clear all data for a package (`pm clear`). Returns true on success.
+   */
+  async clearAppData(packageName: string): Promise<boolean> {
+    const s = this.requireSession();
+    try {
+      const out = await spawnText(s.adb, ["pm", "clear", packageName]);
+      return /Success/i.test(out);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Enable / disable a package. `state` is "user" (default), "default",
+   * or one of the android.content.pm.ComponentPackageState values. Most
+   * users just want true / false — pass "default" or "user" to enable.
+   */
+  async setPackageEnabled(
+    packageName: string,
+    enabled: boolean,
+  ): Promise<boolean> {
+    const s = this.requireSession();
+    const args = enabled
+      ? ["pm", "enable", packageName]
+      : ["pm", "disable-user", packageName];
+    try {
+      const out = await spawnText(s.adb, args);
+      return !/error|failure/i.test(out);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Grant or revoke a runtime permission. Only works for permissions
+   * classified as "runtime" or "dangerous" by the OS (Android 6+).
+   * Returns true on success, false if the device refused (e.g. trying
+   * to revoke a permission the app declared as "install-time only").
+   */
+  async setPermission(
+    packageName: string,
+    permission: string,
+    grant: boolean,
+  ): Promise<boolean> {
+    const s = this.requireSession();
+    const verb = grant ? "grant" : "revoke";
+    try {
+      const out = await spawnText(s.adb, [
+        "pm",
+        verb,
+        packageName,
+        permission,
+      ]);
+      // `pm grant` is silent on success; `pm revoke` prints nothing or
+      // an error. Treat absence of error keywords as success.
+      return !/error|exception|unknown|not granted/i.test(out);
+    } catch {
+      return false;
+    }
   }
 
   /** Uninstall an app by package name. Returns true on success. */
@@ -520,4 +639,230 @@ async function spawnText(adb: Adb, command: readonly string[]): Promise<string> 
   }
   await proc.exited;
   return text;
+}
+
+// ── Package metadata types + parsers ───────────────────────────────────────
+
+/** Result of `aapt2 dump badging <apk>`. */
+export interface PackageMeta {
+  /** Human-readable app label, e.g. "Settings" or "📱 Files". */
+  label: string;
+  /** versionName, e.g. "14". */
+  versionName: string | null;
+  /** versionCode as a number, e.g. 12345. */
+  versionCode: number | null;
+  /** minSdkVersion, e.g. 24. */
+  minSdk: number | null;
+  /** targetSdkVersion, e.g. 34. */
+  targetSdk: number | null;
+  /**
+   * Best-effort icon resource identifier from `application-icon-*` lines.
+   * Example: "res/mipmap-anydpi-v26/ic_launcher.xml". `null` if no icon
+   * is declared. Used to extract a real icon from the APK on demand.
+   */
+  iconRes: string | null;
+  /** Whether the APK declares `android:debuggable="true"`. */
+  debuggable: boolean;
+}
+
+/** Result of `dumpsys package <pkg>`. */
+export interface PackageDetails {
+  /** `true` for system packages (under `/system/app`, `/system/priv-app`). */
+  isSystem: boolean;
+  /** Component enabled state: "enabled", "disabled", "default". */
+  enabled: boolean;
+  /** First install time as ISO string, or null if unknown. */
+  firstInstallTime: string | null;
+  /** Last update time as ISO string, or null if unknown. */
+  lastUpdateTime: string | null;
+  /** Permissions currently granted to the app (runtime + install-time). */
+  grantedPermissions: string[];
+  /** All permissions the app declared in its manifest. */
+  requestedPermissions: string[];
+  /** Primary CPU ABI, e.g. "arm64-v8a". */
+  primaryCpuAbi: string | null;
+  /** The path the package was loaded from. */
+  codePath: string | null;
+  /** User 0 install location flag (0=auto, 1=internal, 2=external). */
+  installLocation: number | null;
+}
+
+/**
+ * Parse `aapt2 dump badging <apk>` output. Example:
+ *   package: name='com.android.settings' versionCode='36' versionName='14'
+ *   sdkVersion:'24'
+ *   targetSdkVersion:'34'
+ *   application-label:'Settings'
+ *   application-label-ar:'الإعدادات'
+ *   application-icon-160:'res/mipmap-anydpi/ic_launcher.xml'
+ *   application: label='Settings' icon='res/...' debuggable
+ *
+ * `aapt2 dump badging` is very chatty (every locale gets its own label
+ * line), so we just take the first `application-label:` and the smallest
+ * `application-icon-*` resource (smallest density is the most portable).
+ */
+function parseAaptBadging(text: string): PackageMeta | null {
+  let label: string | null = null;
+  let iconRes: string | null = null;
+  let versionName: string | null = null;
+  let versionCode: number | null = null;
+  let minSdk: number | null = null;
+  let targetSdk: number | null = null;
+  let debuggable = false;
+
+  // Pick the smallest-density icon (mdpi=160dpi) for portability, fall
+  // back to whatever density is present.
+  let iconDpi = Number.POSITIVE_INFINITY;
+
+  for (const line of text.split("\n")) {
+    if (!label) {
+      const m = line.match(/^application-label:\s*'((?:[^'\\]|\\.)*)'/);
+      if (m) label = unescapeAaptString(m[1]);
+    }
+    const icon = line.match(/^application-icon-(\d+):\s*'([^']+)'/);
+    if (icon) {
+      const dpi = Number.parseInt(icon[1], 10);
+      if (Number.isFinite(dpi) && dpi < iconDpi) {
+        iconDpi = dpi;
+        iconRes = icon[2];
+      }
+    }
+    const verLine = line.match(/^package:\s*name='[^']+'\s+versionCode='([^']+)'\s+versionName='([^']+)'/);
+    if (verLine && versionName === null) {
+      versionCode = Number.parseInt(verLine[1], 10);
+      versionName = verLine[2];
+    }
+    const sdkLine = line.match(/^sdkVersion:\s*'(\d+)'/);
+    if (sdkLine) minSdk = Number.parseInt(sdkLine[1], 10);
+    const targetLine = line.match(/^targetSdkVersion:\s*'(\d+)'/);
+    if (targetLine) targetSdk = Number.parseInt(targetLine[1], 10);
+    // `application: label='…' icon='…' debuggable` → check for `debuggable`.
+    if (/^application:/.test(line) && /\bdebuggable\b/.test(line)) {
+      debuggable = true;
+    }
+  }
+
+  if (label === null && versionName === null) return null;
+
+  return {
+    label: label ?? "",
+    versionName,
+    versionCode: Number.isFinite(versionCode) ? versionCode : null,
+    minSdk,
+    targetSdk,
+    iconRes,
+    debuggable,
+  };
+}
+
+/** Unescape aapt2's backslash-escaped strings (`\\'`, `\\n`, etc.). */
+function unescapeAaptString(s: string): string {
+  return s
+    .replace(/\\'/g, "'")
+    .replace(/\\\\/g, "\\")
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t");
+}
+
+/**
+ * Parse `dumpsys package <pkg>` output. Only the fields we display in
+ * the App Manager UI are extracted — there's a lot of internal
+ * machinery in this dump that we ignore.
+ */
+function parseDumpsysPackage(text: string, pkg: string): PackageDetails {
+  const lines = text.split("\n");
+  const result: PackageDetails = {
+    isSystem: false,
+    enabled: true,
+    firstInstallTime: null,
+    lastUpdateTime: null,
+    grantedPermissions: [],
+    requestedPermissions: [],
+    primaryCpuAbi: null,
+    codePath: null,
+    installLocation: null,
+  };
+
+  let inRequested = false;
+  let inInstall = false;
+
+  for (const raw of lines) {
+    const line = raw.trim();
+
+    // Detect the per-package header to know we're inside the right section.
+    // (Some dumps include multiple packages' info — `dumpsys package`
+    // returns just one but `dumpsys package packages` returns all.)
+    if (new RegExp(`\\bPackage\\b.*\\b${escapeRegex(pkg)}\\b`).test(line)) {
+      // continue — still inside our package
+    }
+
+    const codePath = line.match(/^codePath=([^\s]+)/);
+    if (codePath) result.codePath = codePath[1];
+
+    if (/^primaryCpuAbi=/.test(line)) {
+      const m = line.match(/^primaryCpuAbi=(\S+)/);
+      if (m) result.primaryCpuAbi = m[1];
+    }
+
+    if (/^\[Pkg\] firstInstallTime=/.test(line)) {
+      const m = line.match(/firstInstallTime=(-?\d+)/);
+      if (m) result.firstInstallTime = new Date(Number.parseInt(m[1], 10)).toISOString();
+      const lu = line.match(/lastUpdateTime=(-?\d+)/);
+      if (lu) result.lastUpdateTime = new Date(Number.parseInt(lu[1], 10)).toISOString();
+    }
+
+    const en = line.match(/^enabled=(\d+)/);
+    if (en) result.enabled = en[1] !== "0";
+
+    if (/^installLocation=/.test(line)) {
+      const m = line.match(/^installLocation=(\d+)/);
+      if (m) result.installLocation = Number.parseInt(m[1], 10);
+    }
+
+    if (/^System app:/.test(line) || /^Flags=.*SYSTEM/.test(line)) {
+      result.isSystem = true;
+    }
+
+    // Section header for the requested-permissions list.
+    if (/^requested permissions:/.test(line)) {
+      inRequested = true;
+      continue;
+    }
+    // Section header for the install permissions list.
+    if (/^install permissions:/.test(line)) {
+      inRequested = false;
+      inInstall = true;
+      continue;
+    }
+    // Anything else ends a permission list section.
+    if (
+      inRequested && !/^\s+android\./.test(line) && !/^\s+com\./.test(line)
+    ) {
+      inRequested = false;
+    }
+    if (inInstall && line === "") inInstall = false;
+
+    if (inRequested) {
+      const m = line.match(/^\s+(android\.[\w.]+|[a-z][\w.]*\.[\w.]+)/);
+      if (m) result.requestedPermissions.push(m[1]);
+    }
+    if (inInstall) {
+      const m = line.match(/^\s+(android\.[\w.]+|[a-z][\w.]*\.[\w.]+):\s+granted=true/);
+      if (m && !result.grantedPermissions.includes(m[1])) {
+        result.grantedPermissions.push(m[1]);
+      }
+    }
+  }
+
+  // Fallback: if install permissions section wasn't seen, mark all
+  // requested perms as granted (older Android / system apps).
+  if (result.grantedPermissions.length === 0 && result.requestedPermissions.length > 0) {
+    result.grantedPermissions = [...result.requestedPermissions];
+  }
+
+  return result;
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
