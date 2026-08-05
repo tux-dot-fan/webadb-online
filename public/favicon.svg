@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4ea1ff"/>
+      <stop offset="100%" stop-color="#a06bff"/>
+    </linearGradient>
+    <mask id="cutout">
+      <rect width="64" height="64" fill="white"/>
+      <!-- Eye cutouts: black areas will be transparent in mask = see background -->
+      <circle cx="25" cy="24" r="2.5" fill="black"/>
+      <circle cx="39" cy="24" r="2.5" fill="black"/>
+      <!-- Body LED cutouts -->
+      <circle cx="22" cy="42" r="1.8" fill="black"/>
+      <circle cx="42" cy="42" r="1.8" fill="black"/>
+    </mask>
+  </defs>
+  <!-- Background with cutouts applied -->
+  <rect width="64" height="64" rx="14" fill="url(#bg)" mask="url(#cutout)"/>
+  <!-- Robot drawn on top in white -->
+  <g fill="#ffffff">
+    <!-- Antennae (drawn on top so they stay visible above the mask) -->
+    <line x1="22" y1="18" x2="18" y2="12" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+    <line x1="42" y1="18" x2="46" y2="12" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Head: semi-circle dome, narrower for android look -->
+    <path d="M 16 30 A 16 14 0 0 1 48 30 L 48 36 L 16 36 Z"/>
+    <!-- Body bar -->
+    <rect x="16" y="38" width="32" height="9" rx="2"/>
+  </g>
+</svg>

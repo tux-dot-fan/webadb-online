@@ -27,7 +27,14 @@ export function Workspace() {
     <div className="app-shell">
       <header className="site-header">
         <div className="brand">
-          <span className="logo">W</span>
+          <span className="logo" aria-hidden="true">
+            <svg viewBox="0 0 64 64" width="28" height="28">
+              <line x1="22" y1="18" x2="18" y2="12" stroke="#0b0f17" strokeWidth="2.5" strokeLinecap="round" />
+              <line x1="42" y1="18" x2="46" y2="12" stroke="#0b0f17" strokeWidth="2.5" strokeLinecap="round" />
+              <path d="M 16 30 A 16 14 0 0 1 48 30 L 48 36 L 16 36 Z" fill="#0b0f17" />
+              <rect x="16" y="38" width="32" height="9" rx="2" fill="#0b0f17" />
+            </svg>
+          </span>
           WebADB
         </div>
         <div className="meta">
