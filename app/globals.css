@@ -283,6 +283,140 @@ pre {
   font-size: 10px;
 }
 
+/* ── Sidebar sections (Device, Settings) ─────────────────────────────────── */
+.sidebar-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.sidebar-label {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+}
+
+/* ── Settings panel — per-app enable / dock / startup toggles ────────────── */
+.settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.settings-help {
+  margin: 0 0 4px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+.settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: opacity 0.15s, background 0.15s;
+}
+.settings-row.disabled {
+  opacity: 0.55;
+}
+.settings-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.settings-icon {
+  font-size: 20px;
+  flex-shrink: 0;
+}
+.settings-row-text {
+  flex: 1;
+  min-width: 0;
+}
+.settings-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.2;
+}
+.settings-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 2px;
+  line-height: 1.35;
+}
+.settings-row-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+.settings-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.settings-check input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+.settings-hint {
+  font-size: 10px;
+  font-style: italic;
+  color: var(--text-dim);
+  align-self: center;
+  margin-left: auto;
+}
+
+/* iOS-style toggle switch */
+.settings-switch {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.settings-switch input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.settings-switch-slider {
+  position: absolute;
+  inset: 0;
+  background: var(--border);
+  border-radius: 20px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.settings-switch-slider::before {
+  content: "";
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  left: 2px;
+  top: 2px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.15s;
+}
+.settings-switch input:checked + .settings-switch-slider {
+  background: var(--accent);
+}
+.settings-switch input:checked + .settings-switch-slider::before {
+  transform: translateX(16px);
+}
+
 /* ── xterm.js overrides — match our theme tokens ───────────────────────── */
 .xterm {
   padding: 4px 8px;
@@ -783,7 +917,9 @@ section.panel .panel-desc {
 }
 .file-list .row {
   display: grid;
-  grid-template-columns: 1fr 120px 100px;
+  /* 4 columns: [gutter/checkbox] [name (flex)] [size] [mode] */
+  grid-template-columns: auto 1fr 120px 100px;
+  align-items: center;
   padding: 8px 12px;
   border-bottom: 1px solid var(--border);
   gap: 12px;
@@ -1174,7 +1310,12 @@ section.panel .panel-desc {
   padding: 0 24px;
   text-align: center;
 }
-.hero h1 {
+.hero-icon {
+  font-size: 64px;
+  margin-bottom: 12px;
+  filter: drop-shadow(0 4px 16px color-mix(in srgb, var(--accent) 30%, transparent));
+}
+.hero-title {
   font-size: clamp(32px, 5vw, 48px);
   margin: 0 0 16px;
   /* Gradient text: start dim, end in the accent color. Using
@@ -1187,10 +1328,16 @@ section.panel .panel-desc {
   background-clip: text;
   color: transparent;
 }
-.hero p {
+.hero-desc {
   color: var(--text-dim);
   font-size: 17px;
   margin: 0 0 28px;
+}
+.hero-hint {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin: 0;
+  opacity: 0.7;
 }
 
 .feature-grid {

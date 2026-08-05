@@ -2,48 +2,45 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { DevicePanel } from "@/components/DevicePanel";
-import { ShellPanel } from "@/components/ShellPanel";
-import { ApkInstallPanel } from "@/components/ApkInstallPanel";
-import { FileManagerPanel } from "@/components/FileManagerPanel";
-import { ScreenshotPanel } from "@/components/ScreenshotPanel";
-import { AppManagerPanel } from "@/components/AppManagerPanel";
-import { LogcatPanel } from "@/components/LogcatPanel";
-import { WiFiAdbPanel } from "@/components/WiFiAdbPanel";
+import { SettingsPanel } from "@/components/SettingsPanel";
 import {
   useAdbSession,
   useAdbState,
   useAdbSupported,
 } from "@/lib/use-adb";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import {
+  REGISTERED_APPS, getApp, loadEnabled, saveEnabled,
+  type AppDefinition,
+} from "@/lib/app-registry";
 
-// ── App registry ─────────────────────────────────────────────────────────────
+// ── Per-app UI overrides (localStorage) ────────────────────────────────────
+//
+// The registry has static defaults (showInDock / launchOnStartup), but the
+// Settings panel can override them per-user. We persist those overrides
+// under this single key as a record.
 
-type AppType = "shell" | "apps" | "logcat" | "files" | "screenshot" | "apk" | "wifi";
+const APP_OVERRIDES_KEY = "webadb.apps.overrides";
+interface AppOverrides { showInDock?: boolean; launchOnStartup?: boolean }
 
-interface AppDef {
-  id: AppType;
-  title: string;
-  icon: string;
+function loadAppOverrides(): AppOverrides {
+  try {
+    return JSON.parse(localStorage.getItem(APP_OVERRIDES_KEY) ?? "{}");
+  } catch { return {}; }
 }
 
-const APPS: AppDef[] = [
-  { id: "shell",       title: "Terminal",     icon: "🐚" },
-  { id: "apps",        title: "Apps",          icon: "📱" },
-  { id: "logcat",      title: "Logcat",        icon: "📋" },
-  { id: "files",       title: "File Manager",  icon: "📁" },
-  { id: "screenshot",  title: "Screenshot",    icon: "🖼" },
-  { id: "apk",         title: "Install APK",   icon: "📦" },
-  { id: "wifi",        title: "Wi-Fi ADB",     icon: "📶" },
-];
+function saveAppOverrides(o: AppOverrides): void {
+  try { localStorage.setItem(APP_OVERRIDES_KEY, JSON.stringify(o)); }
+  catch { /* ignore */ }
+}
 
 // ── Window state ─────────────────────────────────────────────────────────────
 
-// Each window instance gets a unique string ID (e.g. "shell-2")
 type WindowId = string;
 
 interface WinState {
   id: WindowId;
-  appId: AppType;
+  appId: string; // registry id (was AppType, now string)
   x: number;
   y: number;
   width: number;
@@ -51,20 +48,15 @@ interface WinState {
   zIndex: number;
   minimized: boolean;
   maximized: boolean;
-  // Saved geometry for restore after maximize
-  _savedW?: number;
-  _savedH?: number;
-  _savedX?: number;
-  _savedY?: number;
+  _savedW?: number; _savedH?: number; _savedX?: number; _savedY?: number;
   // Shell-only: initial command to run on PTY start
   shellCmd?: string;
 }
 
-const DEFAULT_WIN_SIZE = { width: 640, height: 420 };
 const MIN_WIN_SIZE = { width: 320, height: 200 };
-const WIN_OFFSET = 24; // cascade offset per new window
+const WIN_OFFSET = 24;
+const DEFAULT_WIN_SIZE = { width: 640, height: 420 };
 
-// Format ISO timestamp → compact "YYYY-MM-DD HH:MM" local time
 function formatTimestamp(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
@@ -85,49 +77,107 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
   const session = useAdbSession();
   const supported = useAdbSupported();
 
-  // All open window instances (key = unique WindowId)
+  // ── Enabled apps + per-app overrides (Settings → localStorage) ─────────
+  const [enabledApps, setEnabledApps] = useState<Set<string>>(() =>
+    typeof window === "undefined"
+      ? new Set(REGISTERED_APPS.map((a) => a.id))
+      : loadEnabled(REGISTERED_APPS)
+  );
+  useEffect(() => {
+    saveEnabled(enabledApps);
+  }, [enabledApps]);
+
+  const [appOverrides, setAppOverrides] = useState<AppOverrides>(() =>
+    typeof window === "undefined" ? {} : loadAppOverrides()
+  );
+  useEffect(() => {
+    saveAppOverrides(appOverrides);
+  }, [appOverrides]);
+
+  /** Effective showInDock: registry default overridden by user setting. */
+  function isInDock(app: AppDefinition): boolean {
+    if (appOverrides.showInDock !== undefined) return appOverrides.showInDock;
+    return app.showInDock !== false;
+  }
+  function isOnStartup(app: AppDefinition): boolean {
+    if (appOverrides.launchOnStartup !== undefined) return appOverrides.launchOnStartup;
+    return app.launchOnStartup === true;
+  }
+
+  // ── Windows state ────────────────────────────────────────────────────────
   const [windows, setWindows] = useState<Map<WindowId, WinState>>(() => {
     const m = new Map<WindowId, WinState>();
-    m.set("shell-1", {
-      id: "shell-1", appId: "shell",
-      x: 30, y: 30, width: 640, height: 420,
-      zIndex: 1, minimized: false, maximized: false,
+    // Seed with apps that should launch on startup. Cascade offset by index.
+    const startups = REGISTERED_APPS.filter(isOnStartup);
+    startups.forEach((app, i) => {
+      const id = `${app.id}-1`;
+      const w = app.defaultSize ?? DEFAULT_WIN_SIZE;
+      m.set(id, {
+        id,
+        appId: app.id,
+        x: 30 + i * WIN_OFFSET,
+        y: 30 + i * WIN_OFFSET,
+        width: w.width,
+        height: w.height,
+        zIndex: i + 1,
+        minimized: false,
+        maximized: false,
+      });
     });
     return m;
   });
 
-  // Counter for generating unique window IDs (e.g. "shell-2", "shell-3")
-  const idCounterRef = useRef({ shell: 1 });
-
-  // Topmost zIndex counter
-  const [topZ, setTopZ] = useState(1);
-
-  // Which app types are visible in the Dock "active" indicator
-  const [activeApps, setActiveApps] = useState<Set<AppType>>(new Set(["shell"]));
-
-  // Sidebar collapse state — persisted to localStorage
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    return localStorage.getItem("webadb.sidebar.collapsed") === "1";
-  });
+  const idCounterRef = useRef<Record<string, number>>({});
+  // Initialize counters to 1 for each registered app (seeded window already uses 1)
   useEffect(() => {
-    try { localStorage.setItem("webadb.sidebar.collapsed", sidebarCollapsed ? "1" : "0"); }
-    catch { /* ignore */ }
-  }, [sidebarCollapsed]);
+    REGISTERED_APPS.forEach((a) => {
+      if (idCounterRef.current[a.id] === undefined) idCounterRef.current[a.id] = 1;
+    });
+  }, []);
+
+  const [topZ, setTopZ] = useState(() => {
+    // topZ must be ≥ initial window zIndex count
+    const startups = REGISTERED_APPS.filter(isOnStartup);
+    return Math.max(1, startups.length);
+  });
+
+  // Track which apps have at least one open window (for Dock dot indicator)
+  const [activeApps, setActiveApps] = useState<Set<string>>(() => {
+    const s = new Set<string>();
+    REGISTERED_APPS.filter(isOnStartup).forEach((a) => s.add(a.id));
+    return s;
+  });
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
-  function nextId(appId: AppType): WindowId {
-    const n = ++idCounterRef.current[appId as keyof typeof idCounterRef.current];
-    return `${appId}-${n}`;
+  function nextId(appId: string): WindowId {
+    const cur = idCounterRef.current;
+    cur[appId] = (cur[appId] ?? 0) + 1;
+    return `${appId}-${cur[appId]}`;
   }
 
   // ── Window lifecycle ─────────────────────────────────────────────────────
 
-  const openWindow = useCallback((
-    appId: AppType,
-    opts?: { shellCmd?: string }
-  ) => {
+  const openWindow = useCallback((appId: string, opts?: { shellCmd?: string }) => {
+    const app = getApp(appId);
+    if (!app) return;
+    if (!enabledApps.has(appId)) return;
+
+    // Single-window apps: focus the existing window instead of opening a new one.
+    if (app.allowMultipleWindows === false) {
+      const existing = [...windows.entries()].find(([, w]) => w.appId === appId);
+      if (existing) {
+        setWindows((prev) => {
+          const next = new Map(prev);
+          const w = { ...existing[1], minimized: false };
+          next.set(existing[0], w);
+          return next;
+        });
+        bringToFrontRef.current?.(existing[0]);
+        return;
+      }
+    }
+
     setActiveApps((prev) => new Set(prev).add(appId));
 
     setTopZ((z) => {
@@ -137,14 +187,14 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
       setWindows((prev) => {
         if (prev.has(newId)) return prev;
         const count = prev.size;
-        const x = 30 + (count % 6) * WIN_OFFSET;
-        const y = 30 + (count % 6) * WIN_OFFSET;
+        const def = app.defaultSize ?? DEFAULT_WIN_SIZE;
         const w: WinState = {
           id: newId,
           appId,
-          x, y,
-          width: DEFAULT_WIN_SIZE.width,
-          height: DEFAULT_WIN_SIZE.height,
+          x: 30 + (count % 6) * WIN_OFFSET,
+          y: 30 + (count % 6) * WIN_OFFSET,
+          width: def.width,
+          height: def.height,
           zIndex: next,
           minimized: false,
           maximized: false,
@@ -155,14 +205,18 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
 
       return next;
     });
-  }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabledApps, windows]);
+
+  // bringToFront needs to be referenced inside openWindow. We use a ref
+  // so we can update it without making openWindow's deps circular.
+  const bringToFrontRef = useRef<((id: WindowId) => void) | null>(null);
 
   const closeWindow = useCallback((id: WindowId) => {
     setWindows((prev) => {
       const next = new Map(prev);
       const win = next.get(id);
       next.delete(id);
-      // If no more windows of this app type remain, remove from activeApps
       if (win && ![...next.values()].some((w) => w.appId === win.appId)) {
         setActiveApps((active) => {
           const next2 = new Set(active);
@@ -187,7 +241,6 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
       const win = prev.get(id);
       if (!win) return prev;
       if (win.maximized) {
-        // Restore saved geometry
         const w: WinState = {
           ...win,
           maximized: false,
@@ -198,7 +251,6 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
         };
         return new Map(prev).set(id, w);
       } else {
-        // Save current geometry, then maximize to full desktop area
         const w: WinState = {
           ...win,
           maximized: true,
@@ -206,17 +258,13 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
           _savedH: win.height,
           _savedX: win.x,
           _savedY: win.y,
-          // Fill the windows-layer (calc(100vh - header - dock))
           x: 0, y: 0,
-          width: 100,
-          height: 100,
+          width: 100, height: 100,
         };
         return new Map(prev).set(id, w);
       }
     });
   }, []);
-
-  // ── Layer / focus ─────────────────────────────────────────────────────────
 
   const bringToFront = useCallback((id: WindowId) => {
     setTopZ((z) => {
@@ -229,30 +277,20 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
       return next;
     });
   }, []);
+  bringToFrontRef.current = bringToFront;
 
   // ── Drag state ───────────────────────────────────────────────────────────
 
   const [drag, setDrag] = useState<{
-    id: WindowId;
-    startX: number;
-    startY: number;
-    startWinX: number;
-    startWinY: number;
+    id: WindowId; startX: number; startY: number;
+    startWinX: number; startWinY: number;
   } | null>(null);
-
-  // ── Resize state ─────────────────────────────────────────────────────────
 
   const [resize, setResize] = useState<{
-    id: WindowId;
-    startX: number;
-    startY: number;
-    startW: number;
-    startH: number;
-    startWinX: number;
-    startWinY: number;
+    id: WindowId; startX: number; startY: number;
+    startW: number; startH: number;
+    startWinX: number; startWinY: number;
   } | null>(null);
-
-  // ── Global mouse handlers ─────────────────────────────────────────────────
 
   useEffect(() => {
     if (!drag && !resize) return;
@@ -279,7 +317,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
           if (!win) return prev;
           return new Map(prev).set(resize.id, {
             ...win,
-            width: Math.max(MIN_WIN_SIZE.width,  resize.startW + dx),
+            width: Math.max(MIN_WIN_SIZE.width, resize.startW + dx),
             height: Math.max(MIN_WIN_SIZE.height, resize.startH + dy),
             x: resize.startWinX,
             y: resize.startWinY,
@@ -288,10 +326,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
       }
     };
 
-    const onUp = () => {
-      setDrag(null);
-      setResize(null);
-    };
+    const onUp = () => { setDrag(null); setResize(null); };
 
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
@@ -301,18 +336,69 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
     };
   }, [drag, resize]);
 
-  // ── Shell initial command state ───────────────────────────────────────────
+  // ── Sidebar collapse state ──────────────────────────────────────────────
+
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("webadb.sidebar.collapsed") === "1";
+  });
+  useEffect(() => {
+    try { localStorage.setItem("webadb.sidebar.collapsed", sidebarCollapsed ? "1" : "0"); }
+    catch { /* ignore */ }
+  }, [sidebarCollapsed]);
+
+  // ── Shell initial command state ──────────────────────────────────────────
 
   const [shellInitialCmd, setShellInitialCmd] = useState<string | null>(null);
 
-  const openShellWindow = useCallback((cmd?: string) => {
-    if (cmd) setShellInitialCmd(cmd);
-    openWindow("shell", { shellCmd: cmd });
+  const openShellWindow = useCallback((cwd?: string, command?: string) => {
+    if (cwd) {
+      const cmd = command ? `cd "${cwd}" && ${command}` : `cd "${cwd}" && pwd`;
+      setShellInitialCmd(cmd);
+      openWindow("shell", { shellCmd: cmd });
+    } else {
+      openWindow("shell");
+    }
   }, [openWindow]);
 
-  // ── Render ───────────────────────────────────────────────────────────────
+  // ── Settings toggles ─────────────────────────────────────────────────────
 
-  // Topmost non-minimized window (for active dock indicator)
+  const toggleEnabled = useCallback((id: string, en: boolean) => {
+    setEnabledApps((prev) => {
+      const next = new Set(prev);
+      if (en) next.add(id); else next.delete(id);
+      return next;
+    });
+    // If disabling, close any open windows of this app
+    if (!en) {
+      setWindows((prev) => {
+        const next = new Map(prev);
+        for (const [wid, w] of next) {
+          if (w.appId === id) next.delete(wid);
+        }
+        return next;
+      });
+      setActiveApps((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  }, []);
+
+  const toggleShowInDock = useCallback((id: string, val: boolean) => {
+    setAppOverrides((o) => ({ ...o, showInDock: val }));
+  }, []);
+
+  const toggleLaunchOnStartup = useCallback((id: string, val: boolean) => {
+    setAppOverrides((o) => ({ ...o, launchOnStartup: val }));
+  }, []);
+
+  // ── Derived state for render ─────────────────────────────────────────────
+
+  const enabledAppsList = REGISTERED_APPS.filter((a) => enabledApps.has(a.id));
+  const dockAppsList = enabledAppsList.filter(isInDock);
+
   const topWinId = (() => {
     let top = 0;
     let topId: WindowId | null = null;
@@ -324,7 +410,6 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
     });
     return topId;
   })();
-
   const topWin = topWinId ? windows.get(topWinId) : null;
 
   return (
@@ -345,12 +430,18 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
           </button>
         </div>
         {!sidebarCollapsed && (
-          <>
-            <div className="sidebar-section">
-              <p className="sidebar-label">Device</p>
-              <DevicePanel state={state} session={session} supported={supported} />
-            </div>
-          </>
+          <div className="sidebar-section">
+            <p className="sidebar-label">Device</p>
+            <DevicePanel state={state} session={session} supported={supported} />
+            <p className="sidebar-label" style={{ marginTop: 12 }}>Settings</p>
+            <SettingsPanel
+              session={session!}
+              enabled={enabledApps}
+              onToggle={toggleEnabled}
+              onToggleDock={toggleShowInDock}
+              onToggleStartup={toggleLaunchOnStartup}
+            />
+          </div>
         )}
         <div className="sidebar-footer">
           {!sidebarCollapsed && <ThemeToggle />}
@@ -364,7 +455,6 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
 
       {/* ── Desktop area ────────────────────────────────────────────── */}
       <div className="desktop-area">
-        {/* Hero when nothing is open */}
         {windows.size === 0 && (
           <div className="hero">
             <div className="hero-icon">🧊</div>
@@ -372,22 +462,28 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
             <p className="hero-desc">
               Connect an Android device via USB and manage it directly from your browser.
             </p>
+            <p className="hero-hint">
+              Pick an app from the Dock below ↓
+            </p>
           </div>
         )}
 
-        {/* Windows layer */}
         <div className="windows-layer">
           {[...windows.values()].map((win) => {
-            const def = APPS.find((a) => a.id === win.appId)!;
+            const def = getApp(win.appId);
+            if (!def) return null; // app was unregistered — skip
             const isTop = topWinId === win.id;
             const isDragging = drag?.id === win.id;
             const isResizing = resize?.id === win.id;
+            const Panel = def.Component;
 
             return (
               <DesktopWindow
                 key={win.id}
                 win={win}
                 def={def}
+                Panel={Panel}
+                session={session}
                 focused={isTop}
                 dragging={isDragging}
                 resizing={isResizing}
@@ -422,7 +518,6 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
                     startWinY: win.y,
                   });
                 }}
-                session={session}
                 shellInitialCmd={shellInitialCmd}
                 onShellOpen={openShellWindow}
               />
@@ -433,7 +528,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
 
       {/* ── Dock ─────────────────────────────────────────────────────── */}
       <nav className="dock" role="navigation" aria-label="Applications">
-        {APPS.map((app) => {
+        {dockAppsList.map((app) => {
           const isActive = activeApps.has(app.id);
           const isTopApp = topWin?.appId === app.id;
           return (
@@ -443,17 +538,22 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
               active={isActive}
               focused={isTopApp}
               onClick={() => {
-                if (isActive) {
-                  // Already open — just bring all windows of this type to front
-                  bringToFront([...windows.entries()].find(([, w]) => w.appId === app.id)?.[0] ?? "");
+                if (isActive && app.allowMultipleWindows !== false) {
+                  // Focus existing window of this type
+                  const existing = [...windows.entries()].find(([, w]) => w.appId === app.id);
+                  if (existing) bringToFront(existing[0]);
+                  else openWindow(app.id);
                 } else {
                   openWindow(app.id);
                 }
               }}
               onRightClick={(e) => {
                 e.preventDefault();
-                // Right click always opens a new window (even if already open)
-                openWindow(app.id);
+                if (app.allowMultipleWindows === false) {
+                  openWindow(app.id);
+                } else {
+                  openWindow(app.id);
+                }
               }}
             />
           );
@@ -467,7 +567,8 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
 
 interface DesktopWindowProps {
   win: WinState;
-  def: AppDef;
+  def: AppDefinition;
+  Panel: AppDefinition["Component"];
   focused: boolean;
   dragging: boolean;
   resizing: boolean;
@@ -479,11 +580,11 @@ interface DesktopWindowProps {
   onResizeMouseDown: (e: React.MouseEvent) => void;
   session: ReturnType<typeof useAdbSession>;
   shellInitialCmd?: string | null;
-  onShellOpen?: (cmd?: string) => void;
+  onShellOpen?: (cwd?: string, command?: string) => void;
 }
 
 function DesktopWindow({
-  win, def, focused, dragging, resizing,
+  win, def, Panel, focused, dragging, resizing,
   onFocus, onClose, onMinimize, onMaximize,
   onTitlebarMouseDown, onResizeMouseDown, session,
   shellInitialCmd, onShellOpen,
@@ -493,7 +594,6 @@ function DesktopWindow({
 
   const isMaximized = win.maximized;
 
-  // Determine % or px sizing
   const style: React.CSSProperties = isMaximized
     ? { top: 0, left: 0, width: "100%", height: "100%", zIndex: win.zIndex }
     : { top: win.y, left: win.x, width: win.width, height: win.height, zIndex: win.zIndex };
@@ -510,7 +610,6 @@ function DesktopWindow({
       style={style}
       onMouseDown={onFocus}
     >
-      {/* ── Title bar ─────────────────────────────────────────────── */}
       <div
         className="window-titlebar"
         onMouseDown={onTitlebarMouseDown}
@@ -552,18 +651,13 @@ function DesktopWindow({
         </div>
       </div>
 
-      {/* Content */}
       <div className="window-content">
-        {win.appId === "shell"       && <ShellPanel session={session} initialCommand={win.shellCmd ?? shellInitialCmd ?? undefined} />}
-        {win.appId === "apps"        && <AppManagerPanel session={session} />}
-        {win.appId === "logcat"      && <LogcatPanel session={session} />}
-        {win.appId === "files"       && <FileManagerPanel session={session} onOpenShell={onShellOpen} />}
-        {win.appId === "screenshot"  && <ScreenshotPanel session={session} />}
-        {win.appId === "apk"         && <ApkInstallPanel session={session} />}
-        {win.appId === "wifi"        && <WiFiAdbPanel session={session} />}
+        <Panel
+          session={session}
+          onOpenShell={onShellOpen ? (cwd) => onShellOpen(cwd) : undefined}
+        />
       </div>
 
-      {/* Resize handle (bottom-right corner) */}
       {!isMaximized && (
         <div
           className="window-resize-handle"
@@ -576,10 +670,10 @@ function DesktopWindow({
   );
 }
 
-// ── Dock ─────────────────────────────────────────────────────────────────────
+// ── Dock item ────────────────────────────────────────────────────────────────
 
 interface DockItemProps {
-  app: AppDef;
+  app: AppDefinition;
   active: boolean;
   focused: boolean;
   onClick: () => void;
@@ -592,7 +686,6 @@ function DockItem({ app, active, focused, onClick, onRightClick }: DockItemProps
   const menuRef = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
 
-  // Close menu on outside click
   useEffect(() => {
     if (!menuOpen) return;
     const handler = (e: MouseEvent) => {
@@ -606,7 +699,6 @@ function DockItem({ app, active, focused, onClick, onRightClick }: DockItemProps
 
   function handleContextMenu(e: React.MouseEvent) {
     e.preventDefault();
-    // Position menu just above the dock item
     const rect = btnRef.current?.getBoundingClientRect();
     setMenuPos({ x: rect ? rect.left : e.clientX, y: rect ? rect.top - 8 : e.clientY - 48 });
     setMenuOpen(true);
@@ -630,7 +722,6 @@ function DockItem({ app, active, focused, onClick, onRightClick }: DockItemProps
         {active && <span className="dock-dot" />}
       </button>
 
-      {/* Right-click menu */}
       {menuOpen && (
         <div
           className="dock-ctx-menu"
