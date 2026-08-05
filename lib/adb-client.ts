@@ -122,11 +122,16 @@ export class AdbClient {
               "No compatible devices found. Check:\n" +
               "  • USB debugging enabled (Settings → About → tap Build 7× →\n" +
               "    Developer options → USB debugging)\n" +
+              "  • MIUI/HyperOS: also enable 'USB debugging (Security settings)'\n" +
+              "    in Developer options (NOT just the regular USB debugging)\n" +
               "  • Phone is unlocked and shows the 'Allow USB debugging'\n" +
-              "    prompt — tap Allow\n" +
+              "    prompt — tap Allow, then check 'Always allow from this computer'\n" +
               "  • USB mode is 'File transfer / MTP', not just charging\n" +
-              "  • Cable supports data, not charge-only\n" +
-              "  • Device is plugged in BEFORE clicking Connect",
+              "  • Cable supports data, not charge-only (many cables are charge-only)\n" +
+              "  • Device is plugged in BEFORE clicking Connect\n" +
+              "  • Try a different USB port on the computer (some hubs don't pass USB 2.0 well)\n" +
+              "  • If the device shows up but adb auth fails, unplug, wait 5s, replug —\n" +
+              "    MIUI sometimes caches a denied authorization state",
           });
           return;
         }
