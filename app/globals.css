@@ -239,21 +239,16 @@ pre {
 
 /* ── Windows layer ────────────────────────────────────────────────────── */
 .windows-layer {
-  flex: 1;
   position: relative;
+  flex: 1;
   overflow: hidden;
-  padding: 16px;
-  display: flex;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  gap: 12px;
 }
 
 /* ── Individual floating window ───────────────────────────────────────── */
 .desktop-window {
-  width: 680px;
-  min-height: 360px;
-  max-height: calc(100vh - 140px);
+  position: absolute;
+  min-width: 320px;
+  min-height: 200px;
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -261,8 +256,7 @@ pre {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* Subtle animation when a window opens */
-  animation: window-open 0.18s ease-out;
+  animation: window-open 0.15s ease-out;
 }
 @keyframes window-open {
   from { opacity: 0; transform: scale(0.96) translateY(4px); }
@@ -271,7 +265,22 @@ pre {
 
 .desktop-window.focused {
   border-color: var(--accent);
-  box-shadow: 0 4px 32px rgba(37, 99, 235, 0.2), 0 1px 4px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 6px 36px rgba(37, 99, 235, 0.22), 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+.desktop-window.maximized {
+  border-radius: 0;
+  border: none;
+}
+
+.desktop-window.dragging {
+  cursor: grabbing;
+  opacity: 0.92;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.28);
+}
+
+.desktop-window.resizing {
+  user-select: none;
 }
 
 /* ── Window title bar ─────────────────────────────────────────────────── */
@@ -334,6 +343,43 @@ pre {
 .window-ctrl-close:hover {
   background: var(--danger);
   color: #fff;
+}
+
+/* ── Resize handle (bottom-right corner) ─────────────────────────────── */
+.window-resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 18px;
+  height: 18px;
+  cursor: se-resize;
+  z-index: 10;
+  /* Visible grip dots */
+  background:
+    linear-gradient(
+      135deg,
+      transparent 30%,
+      var(--border) 30%, var(--border) 40%,
+      transparent 40%, transparent 50%,
+      var(--border) 50%, var(--border) 60%,
+      transparent 60%, transparent 70%,
+      var(--border) 70%, var(--border) 80%,
+      transparent 80%
+    );
+  border-bottom-right-radius: 9px;
+}
+.window-resize-handle:hover {
+  background:
+    linear-gradient(
+      135deg,
+      transparent 30%,
+      var(--text-dim) 30%, var(--text-dim) 40%,
+      transparent 40%, transparent 50%,
+      var(--text-dim) 50%, var(--text-dim) 60%,
+      transparent 60%, transparent 70%,
+      var(--text-dim) 70%, var(--text-dim) 80%,
+      transparent 80%
+    );
 }
 
 /* ── Window content ───────────────────────────────────────────────────── */
@@ -795,11 +841,11 @@ section.panel .panel-desc {
   .sidebar-footer {
     display: none;
   }
-  .windows-layer {
-    padding: 8px;
-  }
   .desktop-window {
-    width: 100%;
-    min-height: 280px;
+    /* On small screens, stack windows full-screen */
+    top: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    height: calc(100vh - 56px) !important;
   }
 }

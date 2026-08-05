@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { DevicePanel } from "@/components/DevicePanel";
 import { ShellPanel } from "@/components/ShellPanel";
 import { ApkInstallPanel } from "@/components/ApkInstallPanel";
@@ -18,22 +18,42 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 
 type AppId = "shell" | "apps" | "logcat" | "files" | "screenshot" | "apk" | "wifi";
 
-interface Window {
+interface WindowDef {
   id: AppId;
   title: string;
   icon: string;
-  minimized: boolean;
 }
 
-const APPS: Window[] = [
-  { id: "shell",       title: "Terminal",     icon: "🐚", minimized: false },
-  { id: "apps",        title: "Apps",          icon: "📱", minimized: false },
-  { id: "logcat",      title: "Logcat",        icon: "📋", minimized: false },
-  { id: "files",       title: "File Manager",  icon: "📁", minimized: false },
-  { id: "screenshot",  title: "Screenshot",    icon: "🖼", minimized: false },
-  { id: "apk",         title: "Install APK",   icon: "📦", minimized: false },
-  { id: "wifi",        title: "Wi-Fi ADB",     icon: "📶", minimized: false },
+const APPS: WindowDef[] = [
+  { id: "shell",       title: "Terminal",     icon: "🐚" },
+  { id: "apps",        title: "Apps",          icon: "📱" },
+  { id: "logcat",      title: "Logcat",        icon: "📋" },
+  { id: "files",       title: "File Manager",  icon: "📁" },
+  { id: "screenshot",  title: "Screenshot",    icon: "🖼" },
+  { id: "apk",         title: "Install APK",   icon: "📦" },
+  { id: "wifi",        title: "Wi-Fi ADB",     icon: "📶" },
 ];
+
+// ── Window state stored in Workspace ───────────────────────────────────────
+
+interface WinState {
+  id: AppId;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  zIndex: number;
+  minimized: boolean;
+  maximized: boolean;
+  // Saved geometry for restore after maximize
+  _savedW?: number;
+  _savedH?: number;
+  _savedX?: number;
+  _savedY?: number;
+}
+
+const DEFAULT_WIN_SIZE = { width: 640, height: 420 };
+const MIN_WIN_SIZE = { width: 320, height: 200 };
 
 interface WorkspaceProps {
   buildVersion: string;
@@ -41,33 +61,41 @@ interface WorkspaceProps {
   buildTimestamp: string;
 }
 
-export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: WorkspaceProps) {
+export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
   const state = useAdbState();
   const session = useAdbSession();
   const supported = useAdbSupported();
 
-  // Set of open window IDs
+  // open window ids
   const [open, setOpen] = useState<Set<AppId>>(new Set(["shell"]));
-  // Set of minimized window IDs
-  const [minimized, setMinimized] = useState<Set<AppId>>(new Set());
-  // Currently focused (top) window id
-  const [focused, setFocused] = useState<AppId>("shell");
+  // per-window state
+  const [windows, setWindows] = useState<Map<AppId, WinState>>(() => {
+    const m = new Map<AppId, WinState>();
+    m.set("shell", { id: "shell", x: 30,  y: 30,  width: 640, height: 420, zIndex: 1, minimized: false, maximized: false });
+    return m;
+  });
+  // topmost zIndex counter
+  const [topZ, setTopZ] = useState(1);
 
-  const toggleWindow = useCallback((id: AppId) => {
-    setOpen((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-        setFocused(id);
-      }
-      return next;
-    });
-    setMinimized((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
+  // ── Window lifecycle ─────────────────────────────────────────────────────
+
+  const openWindow = useCallback((id: AppId) => {
+    setOpen((prev) => new Set(prev).add(id));
+    setWindows((prev) => {
+      if (prev.has(id)) return prev;
+      // Cascade: offset new windows so they don't all start at (30,30)
+      const count = prev.size + 1;
+      const x = 30 + (count % 6) * 24;
+      const y = 30 + (count % 6) * 24;
+      const w: WinState = {
+        id, x, y,
+        width: DEFAULT_WIN_SIZE.width,
+        height: DEFAULT_WIN_SIZE.height,
+        zIndex: 0,
+        minimized: false,
+        maximized: false,
+      };
+      return new Map(prev).set(id, w);
     });
   }, []);
 
@@ -77,29 +105,164 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
       next.delete(id);
       return next;
     });
-    setMinimized((prev) => {
-      const next = new Set(prev);
+    setWindows((prev) => {
+      const next = new Map(prev);
       next.delete(id);
       return next;
     });
   }, []);
 
-  const minimizeWindow = useCallback((id: AppId) => {
-    setMinimized((prev) => new Set(prev).add(id));
-  }, []);
-
-  const focusWindow = useCallback((id: AppId) => {
-    setFocused(id);
-    setMinimized((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
+  const toggleMinimize = useCallback((id: AppId) => {
+    setWindows((prev) => {
+      const win = prev.get(id);
+      if (!win) return prev;
+      const next = new Map(prev);
+      next.set(id, { ...win, minimized: !win.minimized });
       return next;
     });
   }, []);
+
+  // ── Layering ────────────────────────────────────────────────────────────
+
+  const bringToFront = useCallback((id: AppId) => {
+    setTopZ((z) => {
+      const next = z + 1;
+      setWindows((prev) => {
+        const win = prev.get(id);
+        if (!win) return prev;
+        const nextMap = new Map(prev);
+        nextMap.set(id, { ...win, zIndex: next });
+        return nextMap;
+      });
+      return next;
+    });
+  }, []);
+
+  // ── Drag (titlebar) ─────────────────────────────────────────────────────
+
+  const [drag, setDrag] = useState<{ id: AppId; startX: number; startY: number; startWinX: number; startWinY: number } | null>(null);
+  const [resize, setResize] = useState<{ id: AppId; startX: number; startY: number; startW: number; startH: number; startWinX: number; startWinY: number } | null>(null);
+
+  // Attach document-level listeners when dragging/resizing
+  useEffect(() => {
+    if (!drag && !resize) return;
+
+    const onMove = (e: MouseEvent) => {
+      if (drag) {
+        const dx = e.clientX - drag.startX;
+        const dy = e.clientY - drag.startY;
+        setWindows((prev) => {
+          const win = prev.get(drag.id);
+          if (!win) return prev;
+          const next = new Map(prev);
+          next.set(drag.id, {
+            ...win,
+            x: Math.max(0, drag.startWinX + dx),
+            y: Math.max(0, drag.startWinY + dy),
+          });
+          return next;
+        });
+      }
+      if (resize) {
+        const dw = e.clientX - resize.startX;
+        const dh = e.clientY - resize.startY;
+        setWindows((prev) => {
+          const win = prev.get(resize.id);
+          if (!win) return prev;
+          const next = new Map(prev);
+          next.set(resize.id, {
+            ...win,
+            width: Math.max(MIN_WIN_SIZE.width, resize.startW + dw),
+            height: Math.max(MIN_WIN_SIZE.height, resize.startH + dh),
+            x: Math.max(0, resize.startWinX + (e.shiftKey ? dw : 0)),
+            y: Math.max(0, resize.startWinY + (e.shiftKey ? dh : 0)),
+          });
+          return next;
+        });
+      }
+    };
+
+    const onUp = () => {
+      setDrag(null);
+      setResize(null);
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, [drag, resize]);
+
+  // ── Maximize / restore ──────────────────────────────────────────────────
+
+  const toggleMaximize = useCallback((id: AppId) => {
+    setWindows((prev) => {
+      const win = prev.get(id);
+      if (!win) return prev;
+      const next = new Map(prev);
+      next.set(id, {
+        ...win,
+        maximized: !win.maximized,
+        // Restore saved size when un-maximizing
+        width: win.maximized ? win._savedW ?? DEFAULT_WIN_SIZE.width : win.width,
+        height: win.maximized ? win._savedH ?? DEFAULT_WIN_SIZE.height : win.height,
+        x: win.maximized ? win._savedX ?? 30 : win.x,
+        y: win.maximized ? win._savedY ?? 30 : win.y,
+      });
+      return next;
+    });
+  }, []);
+
+  // Maximize stores current dimensions so restore can come back
+  const toggleMaximizeWithSave = useCallback((id: AppId) => {
+    setWindows((prev) => {
+      const win = prev.get(id);
+      if (!win) return prev;
+      const next = new Map(prev);
+      if (win.maximized) {
+        // Restore
+        next.set(id, {
+          ...win,
+          maximized: false,
+          width: win._savedW ?? DEFAULT_WIN_SIZE.width,
+          height: win._savedH ?? DEFAULT_WIN_SIZE.height,
+          x: win._savedX ?? 30,
+          y: win._savedY ?? 30,
+        });
+      } else {
+        // Maximize — save current geometry first
+        next.set(id, {
+          ...win,
+          maximized: true,
+          _savedW: win.width,
+          _savedH: win.height,
+          _savedX: win.x,
+          _savedY: win.y,
+        });
+      }
+      return next;
+    });
+  }, []);
+
+  // ── Render ─────────────────────────────────────────────────────────────
+
+  const focusedId = (() => {
+    let top = 0;
+    let topId: AppId | null = null;
+    windows.forEach((w, id) => {
+      if (open.has(id) && !w.minimized && w.zIndex >= top) {
+        top = w.zIndex;
+        topId = id;
+      }
+    });
+    return topId;
+  })();
 
   return (
     <div className="app-shell">
-      {/* ── Left sidebar (Device Panel) ──────────────────────────────── */}
+      {/* ── Left sidebar ─────────────────────────────────────────────── */}
       <aside className="sidebar">
         <div className="sidebar-brand">
           <span className="logo" aria-hidden="true">
@@ -117,49 +280,87 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
         <DevicePanel state={state} session={session} supported={supported} />
 
         <div className="sidebar-footer">
-          <span className="version-info" title={`Git: ${buildGitHash}`}>
-            v{buildVersion}
-          </span>
+          <span title={`Git: ${buildGitHash}`}>v{buildVersion}</span>
         </div>
       </aside>
 
-      {/* ── Desktop area ─────────────────────────────────────────────── */}
+      {/* ── Desktop ──────────────────────────────────────────────────── */}
       <div className="desktop-area">
         {!session ? (
           <DesktopNotConnected />
         ) : (
           <>
-            {/* Windows layer */}
             <div className="windows-layer">
-              {APPS.filter((app) => open.has(app.id) && !minimized.has(app.id)).map((app) => (
-                <DesktopWindow
-                  key={app.id}
-                  id={app.id}
-                  title={app.title}
-                  icon={app.icon}
-                  focused={focused === app.id}
-                  onFocus={() => focusWindow(app.id)}
-                  onMinimize={() => minimizeWindow(app.id)}
-                  onClose={() => closeWindow(app.id)}
-                  session={session}
-                />
-              ))}
+              {APPS.filter((a) => open.has(a.id)).map((app) => {
+                const win = windows.get(app.id);
+                if (!win) return null;
+                return (
+                  <DesktopWindow
+                    key={app.id}
+                    app={app}
+                    win={win}
+                    focused={focusedId === app.id}
+                    dragging={drag?.id === app.id}
+                    resizing={resize?.id === app.id}
+                    onFocus={() => bringToFront(app.id)}
+                    onClose={() => closeWindow(app.id)}
+                    onMinimize={() => toggleMinimize(app.id)}
+                    onMaximize={() => toggleMaximizeWithSave(app.id)}
+                    onTitlebarMouseDown={(e) => {
+                      if (win.maximized) return;
+                      e.preventDefault();
+                      bringToFront(app.id);
+                      setDrag({
+                        id: app.id,
+                        startX: e.clientX,
+                        startY: e.clientY,
+                        startWinX: win.x,
+                        startWinY: win.y,
+                      });
+                    }}
+                    onResizeMouseDown={(e) => {
+                      if (win.maximized) return;
+                      e.preventDefault();
+                      e.stopPropagation();
+                      bringToFront(app.id);
+                      setResize({
+                        id: app.id,
+                        startX: e.clientX,
+                        startY: e.clientY,
+                        startW: win.width,
+                        startH: win.height,
+                        startWinX: win.x,
+                        startWinY: win.y,
+                      });
+                    }}
+                    session={session}
+                  />
+                );
+              })}
             </div>
 
-            {/* Dock */}
             <div className="dock" role="toolbar" aria-label="Applications">
               {APPS.map((app) => (
                 <DockItem
                   key={app.id}
                   app={app}
                   open={open.has(app.id)}
-                  minimized={minimized.has(app.id)}
+                  minimized={windows.get(app.id)?.minimized ?? false}
                   onClick={() => {
-                    if (open.has(app.id) && !minimized.has(app.id)) {
-                      // Already open and not minimized — bring to front
-                      focusWindow(app.id);
+                    if (!open.has(app.id)) {
+                      openWindow(app.id);
                     } else {
-                      toggleWindow(app.id);
+                      const w = windows.get(app.id);
+                      if (w?.minimized) {
+                        // Restore minimized window and bring to front
+                        toggleMinimize(app.id);
+                        bringToFront(app.id);
+                      } else if (focusedId !== app.id) {
+                        bringToFront(app.id);
+                      } else {
+                        // Already open and focused — minimize
+                        toggleMinimize(app.id);
+                      }
                     }
                   }}
                 />
@@ -172,71 +373,125 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
   );
 }
 
-// ── Desktop Window ────────────────────────────────────────────────────────
+// ── DesktopWindow ───────────────────────────────────────────────────────────
 
 interface DesktopWindowProps {
-  id: AppId;
-  title: string;
-  icon: string;
+  app: WindowDef;
+  win: WinState & { _savedW?: number; _savedH?: number; _savedX?: number; _savedY?: number };
   focused: boolean;
+  dragging: boolean;
+  resizing: boolean;
   onFocus: () => void;
-  onMinimize: () => void;
   onClose: () => void;
+  onMinimize: () => void;
+  onMaximize: () => void;
+  onTitlebarMouseDown: (e: React.MouseEvent) => void;
+  onResizeMouseDown: (e: React.MouseEvent) => void;
   session: ReturnType<typeof useAdbSession>;
 }
 
-function DesktopWindow({ id, title, icon, focused, onFocus, onMinimize, onClose, session }: DesktopWindowProps) {
-  // Guard: should never fire since this component is only rendered when session is set,
-  // but satisfies TypeScript's AdbSession | null
+function DesktopWindow({
+  app, win, focused, dragging, resizing,
+  onFocus, onClose, onMinimize, onMaximize,
+  onTitlebarMouseDown, onResizeMouseDown, session,
+}: DesktopWindowProps) {
   if (!session) return null;
+  if (win.minimized) return null;
+
+  const isMaximized = win.maximized;
+
+  const winStyle: React.CSSProperties = isMaximized
+    ? {
+        position: "absolute",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        width: "100%",
+        height: "100%",
+        zIndex: win.zIndex,
+        borderRadius: 0,
+      }
+    : {
+        position: "absolute",
+        top: win.y,
+        left: win.x,
+        width: win.width,
+        height: win.height,
+        zIndex: win.zIndex,
+      };
 
   return (
     <div
-      className={`desktop-window ${focused ? "focused" : ""}`}
+      className={`desktop-window ${focused ? "focused" : ""} ${isMaximized ? "maximized" : ""} ${dragging ? "dragging" : ""} ${resizing ? "resizing" : ""}`}
+      style={winStyle}
       onMouseDown={onFocus}
     >
       {/* Title bar */}
-      <div className="window-titlebar">
-        <span className="window-title-icon" aria-hidden="true">{icon}</span>
-        <span className="window-title-text">{title}</span>
-        <div className="window-controls">
+      <div
+        className="window-titlebar"
+        onMouseDown={onTitlebarMouseDown}
+        onDoubleClick={onMaximize}
+        title={isMaximized ? undefined : "Drag to move · Double-click to maximize"}
+      >
+        <span className="window-title-icon" aria-hidden="true">{app.icon}</span>
+        <span className="window-title-text">{app.title}</span>
+        <div className="window-controls" onMouseDown={(e) => e.stopPropagation()}>
           <button
-            className="window-ctrl window-ctrl-minimize"
-            onClick={(e) => { e.stopPropagation(); onMinimize(); }}
+            className="window-ctrl"
+            onClick={onMinimize}
             title="Minimize"
-            aria-label={`Minimize ${title}`}
+            aria-label={`Minimize ${app.title}`}
           >
-            ─
+            <span aria-hidden="true">─</span>
+          </button>
+          <button
+            className="window-ctrl"
+            onClick={onMaximize}
+            title={isMaximized ? "Restore" : "Maximize"}
+            aria-label={isMaximized ? `Restore ${app.title}` : `Maximize ${app.title}`}
+          >
+            <span aria-hidden="true">{isMaximized ? "❐" : "□"}</span>
           </button>
           <button
             className="window-ctrl window-ctrl-close"
-            onClick={(e) => { e.stopPropagation(); onClose(); }}
+            onClick={onClose}
             title="Close"
-            aria-label={`Close ${title}`}
+            aria-label={`Close ${app.title}`}
           >
-            ✕
+            <span aria-hidden="true">✕</span>
           </button>
         </div>
       </div>
 
       {/* Content */}
       <div className="window-content">
-        {id === "shell"       && <ShellPanel session={session} />}
-        {id === "apps"        && <AppManagerPanel session={session} />}
-        {id === "logcat"      && <LogcatPanel session={session} />}
-        {id === "files"       && <FileManagerPanel session={session} />}
-        {id === "screenshot"  && <ScreenshotPanel session={session} />}
-        {id === "apk"         && <ApkInstallPanel session={session} />}
-        {id === "wifi"        && <WiFiAdbPanel session={session} />}
+        {app.id === "shell"       && <ShellPanel session={session} />}
+        {app.id === "apps"        && <AppManagerPanel session={session} />}
+        {app.id === "logcat"      && <LogcatPanel session={session} />}
+        {app.id === "files"       && <FileManagerPanel session={session} />}
+        {app.id === "screenshot"  && <ScreenshotPanel session={session} />}
+        {app.id === "apk"         && <ApkInstallPanel session={session} />}
+        {app.id === "wifi"        && <WiFiAdbPanel session={session} />}
       </div>
+
+      {/* Resize handle (bottom-right corner) */}
+      {!isMaximized && (
+        <div
+          className="window-resize-handle"
+          onMouseDown={onResizeMouseDown}
+          title="Drag to resize"
+          aria-label="Resize window"
+        />
+      )}
     </div>
   );
 }
 
-// ── Dock Item ─────────────────────────────────────────────────────────────
+// ── Dock ────────────────────────────────────────────────────────────────────
 
 interface DockItemProps {
-  app: Window;
+  app: WindowDef;
   open: boolean;
   minimized: boolean;
   onClick: () => void;
@@ -258,7 +513,7 @@ function DockItem({ app, open, minimized, onClick }: DockItemProps) {
   );
 }
 
-// ── Not-connected state ────────────────────────────────────────────────────
+// ── Not-connected ────────────────────────────────────────────────────────────
 
 function DesktopNotConnected() {
   return (
@@ -273,38 +528,23 @@ function DesktopNotConnected() {
       <div className="feature-grid">
         <div className="card">
           <h3>🔌 WebUSB</h3>
-          <p>
-            Direct USB connection from your browser. No drivers, no adb-server, no
-            extensions. Just Chrome, Edge, or Opera.
-          </p>
+          <p>Direct USB from your browser. No drivers, no adb-server. Just Chrome, Edge, or Opera.</p>
         </div>
         <div className="card">
           <h3>🐚 Terminal</h3>
-          <p>
-            Run any command on the device. <code>getprop</code>, <code>pm list</code>,
-            <code>dumpsys</code>, <code>ls</code> — everything in a real PTY terminal.
-          </p>
+          <p>Full PTY terminal with arrow keys, Ctrl+C, and Tab completion.</p>
         </div>
         <div className="card">
           <h3>📁 File Manager</h3>
-          <p>
-            Browse <code>/sdcard</code> and the rest of the device filesystem.
-            Preview and download files.
-          </p>
+          <p>Browse <code>/sdcard</code>, preview text/images/audio/video, download files.</p>
         </div>
         <div className="card">
           <h3>📸 Screenshot</h3>
-          <p>
-            One-click <code>screencap</code> via the framebuffer protocol. No scrcpy
-            server needed.
-          </p>
+          <p>One-click <code>screencap</code> — no scrcpy server needed.</p>
         </div>
         <div className="card">
           <h3>🔒 Private</h3>
-          <p>
-            Everything runs in your browser. No files leave your computer, no data is
-            sent to a server. <code>webadb.online</code> is a static site.
-          </p>
+          <p>Everything runs in your browser. No data leaves your computer.</p>
         </div>
       </div>
     </div>
