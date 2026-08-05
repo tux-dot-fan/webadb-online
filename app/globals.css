@@ -58,6 +58,7 @@ body {
   font-size: 15px;
   line-height: 1.55;
   min-height: 100vh;
+  overflow: hidden;
 }
 
 a {
@@ -438,15 +439,35 @@ pre {
 
 
 /* ── Dock ─────────────────────────────────────────────────────────────── */
+/* ── Dock ─────────────────────────────────────────────────────────────────── */
 .dock {
+  /* Floating centered bar — true macOS style */
+  position: fixed;
+  bottom: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+
   display: flex;
-  align-items: center;
+  align-items: flex-end; /* icons align to bottom so magnify goes UP */
   justify-content: center;
-  gap: 4px;
-  padding: 8px 16px;
-  background: var(--bg-elev);
-  border-top: 1px solid var(--border);
-  flex-shrink: 0;
+  gap: 6px;
+  padding: 8px 10px;
+
+  /* macOS frosted glass */
+  background: rgba(30, 30, 30, 0.55);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.dock-item-wrap {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
 .dock-item {
@@ -456,36 +477,51 @@ pre {
   gap: 3px;
   padding: 6px 10px;
   border: none;
-  border-radius: 8px;
+  border-radius: 10px;
   background: transparent;
   cursor: pointer;
-  color: var(--text-dim);
+  color: rgba(255, 255, 255, 0.75);
   font-size: 11px;
   font-weight: 500;
-  transition: background 0.15s, color 0.15s;
   position: relative;
   min-width: 52px;
+
+  /* macOS magnify: default */
+  transition: transform 0.2s cubic-bezier(0.25, 1, 0.5, 1), color 0.15s;
 }
+
 .dock-item:hover {
-  background: var(--bg-elev-2);
-  color: var(--text);
+  color: rgba(255, 255, 255, 0.95);
+  /* Magnify: scale up and lift */
+  transform: scale(1.45) translateY(-10px);
+  background: rgba(255, 255, 255, 0.1);
 }
-.dock-item.open {
-  color: var(--text);
+
+.dock-item.active {
+  color: rgba(255, 255, 255, 0.95);
 }
-.dock-item.minimized {
-  color: var(--text-dim);
-  opacity: 0.65;
-}
-.dock-item.open .dock-icon {
-  /* Slightly larger icon for open apps */
+
+.dock-item.active .dock-icon {
   transform: scale(1.1);
 }
 
+/* macOS bounce on click */
+@keyframes dock-bounce {
+  0%   { transform: scale(1.45) translateY(-10px); }
+  50%  { transform: scale(1.6) translateY(-14px); }
+  75%  { transform: scale(1.5) translateY(-12px); }
+  100% { transform: scale(1.45) translateY(-10px); }
+}
+.dock-item.bouncing {
+  animation: dock-bounce 0.35s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
 .dock-icon {
-  font-size: 22px;
+  font-size: 26px;
   line-height: 1;
   transition: transform 0.15s;
+  /* Slightly larger emoji rendering */
+  display: block;
 }
 
 .dock-label {
@@ -494,17 +530,19 @@ pre {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 52px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
 }
 
 .dock-dot {
   position: absolute;
-  bottom: 3px;
+  bottom: -2px;
   left: 50%;
   transform: translateX(-50%);
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--accent, #4ea1ff);
+  box-shadow: 0 0 4px var(--accent, #4ea1ff);
 }
 
 /* ── section.panel (used inside window content) ─────────────────────────── */
