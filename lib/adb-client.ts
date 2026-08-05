@@ -372,6 +372,78 @@ export class AdbClient {
   }
 
   /**
+   * Read `/proc/stat` — single sample. Returns per-CPU stats and an
+   * aggregate "cpu" line. Used by the System Monitor General tab to draw
+   * usage bars.
+   *
+   * Format of `/proc/stat`:
+   *   cpu  user nice system idle iowait irq softirq steal guest guest_nice
+   *   cpu0 user nice system idle iowait irq softirq steal guest guest_nice
+   *   cpu1 ...
+   *   cpusum is the aggregate (the first unnumbered "cpu" line).
+   * Times are in "USER_HZ" units (typically 100 = 1 sec on Android).
+   */
+  async getCpuStats(): Promise<CpuStats> {
+    const s = this.requireSession();
+    const out = await spawnText(s.adb, ["cat", "/proc/stat"]);
+    return parseProcStat(out);
+  }
+
+  /**
+   * Read `/proc/meminfo` and return parsed totals. Used by the System
+   * Monitor General tab to draw the memory bar and the available /
+   * buffers / cached / swap line items.
+   *
+   * Note: `MemAvailable` only exists on kernel 3.14+; on older kernels
+   * we approximate it as `MemFree + Buffers + Cached`.
+   */
+  async getMemoryInfo(): Promise<MemoryInfo> {
+    const s = this.requireSession();
+    const out = await spawnText(s.adb, ["cat", "/proc/meminfo"]);
+    return parseMeminfo(out);
+  }
+
+  /**
+   * Snapshot of every running process. Uses toybox `ps` on Android.
+   *
+   *   ps -A -o PID,USER,NAME,%CPU,%MEM,RSS
+   *
+   * - `-A`        → all processes (not just current session)
+   * - `-o …`      → explicit columns, no truncation surprises
+   * - `RSS` is in KB (resident set size)
+   * - `%CPU` is normalized across all cores on toybox 1.28+; on older
+   *   versions it can exceed 100 for multi-threaded processes — we just
+   *   show whatever the device reports.
+   *
+   * The `name` column (P.NAME = process/cmdline) is the field we use to
+   * match against installed apps. On Android, processes are typically
+   * named after their main package (e.g. `com.android.chrome`).
+   */
+  async getProcessList(): Promise<ProcessInfo[]> {
+    const s = this.requireSession();
+    let out: string;
+    try {
+      out = await spawnText(s.adb, [
+        "ps",
+        "-A",
+        "-o",
+        "PID,USER,NAME,%CPU,%MEM,RSS",
+      ]);
+    } catch {
+      // Older toybox may not support the RSS column. Fall back to the
+      // smaller set so we still get *something* usable.
+      out = await spawnText(s.adb, [
+        "ps",
+        "-A",
+        "-o",
+        "PID,USER,NAME,%CPU,%MEM",
+      ]);
+      return parseProcessList(out, false);
+    }
+    return parseProcessList(out, true);
+  }
+
+  /**
    * Grant or revoke a runtime permission. Only works for permissions
    * classified as "runtime" or "dangerous" by the OS (Android 6+).
    * Returns true on success, false if the device refused (e.g. trying
@@ -866,3 +938,241 @@ function parseDumpsysPackage(text: string, pkg: string): PackageDetails {
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+// ── System monitor types + parsers ────────────────────────────────────────
+
+/** Per-CPU stats from `/proc/stat`. Times are in USER_HZ (typically 100/s). */
+export interface CpuTimes {
+  user: number;
+  nice: number;
+  system: number;
+  idle: number;
+  iowait: number;
+  irq: number;
+  softirq: number;
+  steal: number;
+  guest: number;
+  guestNice: number;
+}
+
+/** A single CPU line from `/proc/stat` (either aggregate or per-core). */
+export interface CpuSample {
+  /** "cpu" for aggregate, "cpu0", "cpu1", … for per-core. */
+  label: string;
+  /** Times broken down by category. */
+  times: CpuTimes;
+}
+
+/** Result of parsing `/proc/stat`. */
+export interface CpuStats {
+  /** Aggregate across all cores (the "cpu" line). */
+  total: CpuSample;
+  /** One entry per logical CPU (cpu0, cpu1, …). */
+  perCpu: CpuSample[];
+}
+
+/**
+ * Memory figures from `/proc/meminfo`. All values are in kibibytes (KiB).
+ *
+ * `available` is either `MemAvailable` (kernel 3.14+) or a fallback
+ * estimate of `MemFree + Buffers + Cached` for older kernels.
+ */
+export interface MemoryInfo {
+  total: number;
+  free: number;
+  available: number;
+  buffers: number;
+  cached: number;
+  swapTotal: number;
+  swapFree: number;
+  dirty: number;
+  /** Where `available` came from — useful for the UI tooltip. */
+  availableSource: "MemAvailable" | "fallback";
+}
+
+/** Single row from `ps -A`. */
+export interface ProcessInfo {
+  pid: number;
+  /** Process owner (e.g. "u0_a42", "system", "root"). */
+  user: string;
+  /** Process / command name (often the package name on Android). */
+  name: string;
+  /** CPU percentage as reported by the device — may exceed 100 for
+   *  multi-threaded processes on older toybox. */
+  cpuPercent: number;
+  /** Memory percentage of total RAM. */
+  memPercent: number;
+  /** Resident set size in KiB. Null if the device's toybox doesn't
+   *  support the RSS column (rare; we fall back to no-RSS in that case). */
+  rssKb: number | null;
+}
+
+/** Sum of all non-idle times; useful for the "compute usage" denominator. */
+function cpuTotal(t: CpuTimes): number {
+  return t.user + t.nice + t.system + t.idle + t.iowait
+    + t.irq + t.softirq + t.steal + t.guest + t.guestNice;
+}
+
+/** Idle time only (idle + iowait). */
+function cpuIdle(t: CpuTimes): number {
+  return t.idle + t.iowait;
+}
+
+/**
+ * Parse `/proc/stat` output. Each line begins with "cpu" or "cpuN" then
+ * 10 space-separated integers. Lines we don't recognise are skipped.
+ */
+function parseProcStat(text: string): CpuStats {
+  let total: CpuSample | null = null;
+  const perCpu: CpuSample[] = [];
+
+  for (const raw of text.split("\n")) {
+    const line = raw.trim();
+    if (!line.startsWith("cpu")) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length < 11) continue;
+    const label = parts[0];
+    // Skip lines like `cpu` (aggregate) and `cpu0`/`cpu1`/...; ignore
+    // `cpufreq`, `cpu_dma_latency`, etc.
+    if (label !== "cpu" && !/^cpu\d+$/.test(label)) continue;
+    const nums = parts.slice(1, 11).map(Number);
+    if (nums.some((n) => !Number.isFinite(n))) continue;
+    const times: CpuTimes = {
+      user: nums[0],
+      nice: nums[1],
+      system: nums[2],
+      idle: nums[3],
+      iowait: nums[4],
+      irq: nums[5],
+      softirq: nums[6],
+      steal: nums[7],
+      guest: nums[8],
+      guestNice: nums[9],
+    };
+    const sample: CpuSample = { label, times };
+    if (label === "cpu") total = sample;
+    else perCpu.push(sample);
+  }
+
+  if (!total) {
+    // Empty /proc/stat — return zeros so the UI doesn't crash.
+    const zero: CpuTimes = {
+      user: 0, nice: 0, system: 0, idle: 0, iowait: 0,
+      irq: 0, softirq: 0, steal: 0, guest: 0, guestNice: 0,
+    };
+    return {
+      total: { label: "cpu", times: zero },
+      perCpu: [],
+    };
+  }
+  return { total, perCpu };
+}
+
+/**
+ * Parse `/proc/meminfo`. Lines look like:
+ *   MemTotal:        7654320 kB
+ *   MemFree:          234567 kB
+ *   MemAvailable:    3456789 kB    ← only on newer kernels
+ *   Buffers:          123456 kB
+ *   Cached:          1234567 kB
+ *   SwapTotal:             0 kB
+ *   SwapFree:              0 kB
+ *   Dirty:             1234 kB
+ *
+ * `MemAvailable` is the modern, kernel-estimated free memory; on older
+ * kernels we fall back to `MemFree + Buffers + Cached`.
+ */
+function parseMeminfo(text: string): MemoryInfo {
+  const fields: Record<string, number> = {};
+  for (const raw of text.split("\n")) {
+    const m = raw.match(/^(\w+):\s+(\d+)/);
+    if (m) fields[m[1]] = Number.parseInt(m[2], 10);
+  }
+  const total = fields["MemTotal"] ?? 0;
+  const free = fields["MemFree"] ?? 0;
+  const buffers = fields["Buffers"] ?? 0;
+  const cached = fields["Cached"] ?? 0;
+  const dirty = fields["Dirty"] ?? 0;
+  const swapTotal = fields["SwapTotal"] ?? 0;
+  const swapFree = fields["SwapFree"] ?? 0;
+  let available: number;
+  let availableSource: "MemAvailable" | "fallback";
+  if (fields["MemAvailable"] !== undefined) {
+    available = fields["MemAvailable"];
+    availableSource = "MemAvailable";
+  } else {
+    available = free + buffers + cached;
+    availableSource = "fallback";
+  }
+  return {
+    total, free, available, buffers, cached,
+    swapTotal, swapFree, dirty, availableSource,
+  };
+}
+
+/**
+ * Parse `ps -A -o PID,USER,NAME,%CPU,%MEM,RSS` output. The first line is
+ * the header (we skip it). RSS is optional; pass `hasRss=false` for the
+ * fallback path that doesn't request RSS.
+ *
+ * toybox's `ps` truncates NAME to 15 chars by default; we don't widen
+ * it because most Android process names fit. If you need full cmdlines
+ * you'd add `-w` but the resulting strings get noisy in a UI column.
+ */
+function parseProcessList(text: string, hasRss: boolean): ProcessInfo[] {
+  const lines = text.split("\n").filter((l) => l.trim().length > 0);
+  const out: ProcessInfo[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    // First line is the header "PID USER …"; skip it.
+    if (i === 0 && /^PID\s/.test(line)) continue;
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 5) continue;
+    const pid = Number.parseInt(parts[0], 10);
+    if (!Number.isFinite(pid)) continue;
+    const user = parts[1];
+    // NAME is the 3rd column; %CPU the 4th; %MEM the 5th; RSS the 6th.
+    // The NAME itself may contain spaces in some shells, but toybox
+    // truncates to 15 chars with no spaces, so a simple split works.
+    const name = parts[2];
+    const cpuPercent = Number.parseFloat(parts[3]);
+    const memPercent = Number.parseFloat(parts[4]);
+    let rssKb: number | null = null;
+    if (hasRss && parts.length >= 6) {
+      const rss = Number.parseInt(parts[5], 10);
+      rssKb = Number.isFinite(rss) ? rss : null;
+    }
+    out.push({
+      pid,
+      user,
+      name,
+      cpuPercent: Number.isFinite(cpuPercent) ? cpuPercent : 0,
+      memPercent: Number.isFinite(memPercent) ? memPercent : 0,
+      rssKb,
+    });
+  }
+  return out;
+}
+
+/**
+ * Compute per-CPU busy percentage (0-100) from two consecutive samples.
+ * Returns an array the same length as `perCpu`; `null` entries mean we
+ * don't have enough data yet (the first tick).
+ */
+export function computeCpuPercents(
+  prev: CpuStats | null,
+  next: CpuStats,
+): (number | null)[] {
+  if (!prev) return next.perCpu.map(() => null);
+  return next.perCpu.map((cur, i) => {
+    const old = prev.perCpu[i];
+    if (!old) return null;
+    const dTotal = cpuTotal(cur.times) - cpuTotal(old.times);
+    const dIdle = cpuIdle(cur.times) - cpuIdle(old.times);
+    if (dTotal <= 0) return 0;
+    return Math.max(0, Math.min(100, ((dTotal - dIdle) / dTotal) * 100));
+  });
+}
+
+/** Convenience re-export of the internal idle/total helpers. */
+export const _cpuHelpers = { cpuTotal, cpuIdle };

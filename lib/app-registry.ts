@@ -66,6 +66,7 @@ export interface AppDefinition {
 import { ShellPanel }        from "@/components/ShellPanel";
 import { FileManagerPanel }  from "@/components/FileManagerPanel";
 import { AppManagerPanel }   from "@/components/AppManagerPanel";
+import { SystemMonitorPanel } from "@/components/SystemMonitorPanel";
 import { LogcatPanel }       from "@/components/LogcatPanel";
 import { ScreenshotPanel }   from "@/components/ScreenshotPanel";
 import { ApkInstallPanel }   from "@/components/ApkInstallPanel";
@@ -148,6 +149,17 @@ export const REGISTERED_APPS: AppDefinition[] = [
     launchOnStartup: false,
     allowMultipleWindows: true,
     description: "Live system logcat stream with ANSI colors.",
+  },
+  {
+    id: "monitor",
+    title: "System Monitor",
+    icon: "📊",
+    Component: SystemMonitorPanel,
+    defaultSize: { width: 760, height: 540 },
+    showInDock: true,
+    launchOnStartup: false,
+    allowMultipleWindows: false,
+    description: "Per-core CPU usage, memory water level, and process list.",
   },
   {
     id: "screenshot",
