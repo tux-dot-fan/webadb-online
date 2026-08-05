@@ -890,9 +890,7 @@ function LauncherOverlay({ onClose, onLaunch }: LauncherOverlayProps) {
     <div className="overlay overlay-fullscreen" onClick={(e) => {
       if (e.target === e.currentTarget) onClose();
     }}>
-      <div className="overlay-launcher">
-        <LauncherApp onLaunchApp={onLaunch} />
-      </div>
+      <LauncherApp onLaunchApp={onLaunch} />
     </div>
   );
 }

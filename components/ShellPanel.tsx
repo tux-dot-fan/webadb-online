@@ -277,10 +277,6 @@ export function ShellPanel({ session, initialCommand }: Props) {
           )}
         </div>
       </div>
-      <p className="panel-desc" style={{ marginBottom: 10 }}>
-        Interactive shell on the device. Ctrl+C, arrow keys, and Tab
-        completion work — anything that needs a real terminal.
-      </p>
       {/* `key` on the container forces React to fully unmount the div on
           remount, which in turn re-runs the setup effect and opens a
           fresh PTY. This is the simplest reliable restart mechanism. */}

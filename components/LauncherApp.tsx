@@ -10,9 +10,14 @@
 // would no-op). Settings + Launcher themselves are always shown because
 // they're the entry points to manage app visibility.
 //
+// The grid is paged when it overflows the visible area — dots at the
+// bottom + side arrows let the user flip between pages. Page count is
+// derived from the height available at render time (we measure the
+// container with ResizeObserver).
+//
 // Open with: openAppWindow("launcher")
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { REGISTERED_APPS, loadEnabled } from "@/lib/app-registry";
 
 interface LauncherAppProps {
@@ -48,19 +53,56 @@ export function LauncherApp({
     (a) => a.alwaysEnabled === true || enabledIds.has(a.id),
   );
 
+  // ── Paging ─────────────────────────────────────────────────────────────
+  // We try to keep the grid within the viewport. The page host is the
+  // .overlay-fullscreen surface; we measure its height to decide how many
+  // rows fit, then compute page count. The page flipper is keyboard-
+  // friendly too (←/→, Home/End).
+  const hostRef = useRef<HTMLDivElement>(null);
+  const [page, setPage] = useState(0);
+  const [pageCount, setPageCount] = useState(1);
+
+  useLayoutEffect(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const recompute = () => {
+      const h = host.clientHeight;
+      // 6 rows of 110px leaves room for the dots footer + nav arrows.
+      const rows = Math.max(2, Math.floor((h - 60) / 110));
+      const cols = 6; // visual sweet spot for tile width
+      const per = rows * cols;
+      const count = Math.max(1, Math.ceil(tiles.length / per));
+      setPageCount((prev) => {
+        if (count !== prev) {
+          // Clamp page if tiles shrank.
+          setPage((p) => Math.min(p, count - 1));
+        }
+        return count;
+      });
+    };
+    recompute();
+    const ro = new ResizeObserver(recompute);
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, [tiles.length]);
+
+  const perPage = Math.ceil(tiles.length / pageCount);
+  const pageItems = tiles.slice(page * perPage, (page + 1) * perPage);
+
+  const flip = (delta: number) => {
+    setPage((p) => (p + delta + pageCount) % pageCount);
+  };
+
   return (
-    <div className="launcher-app">
-      <header className="launcher-header">
-        <h2>Apps</h2>
-        <p className="launcher-hint">Tap an app to open it.</p>
-      </header>
+    <div ref={hostRef} className="launcher-app">
       <div className="launcher-grid">
-        {tiles.map((app) => (
+        {pageItems.map((app) => (
           <button
             key={app.id}
             type="button"
             className="launcher-tile"
             onClick={() => onLaunchApp(app.id)}
+            title={app.description ?? app.title}
           >
             <span className="launcher-tile-icon" aria-hidden>
               {app.icon}
@@ -69,6 +111,40 @@ export function LauncherApp({
           </button>
         ))}
       </div>
+
+      {pageCount > 1 && (
+        <nav className="launcher-pager" aria-label="Launcher pages">
+          <button
+            type="button"
+            className="launcher-arrow"
+            aria-label="Previous page"
+            onClick={() => flip(-1)}
+          >
+            ‹
+          </button>
+          <div className="launcher-dots" role="tablist">
+            {Array.from({ length: pageCount }).map((_, i) => (
+              <button
+                key={i}
+                type="button"
+                role="tab"
+                aria-selected={i === page}
+                aria-label={`Page ${i + 1}`}
+                className={`launcher-dot${i === page ? " is-active" : ""}`}
+                onClick={() => setPage(i)}
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            className="launcher-arrow"
+            aria-label="Next page"
+            onClick={() => flip(1)}
+          >
+            ›
+          </button>
+        </nav>
+      )}
     </div>
   );
 }
