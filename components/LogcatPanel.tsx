@@ -238,9 +238,18 @@ export function LogcatPanel({ session }: Props) {
       const decoder = new TextDecoder("utf-8", { fatal: false });
       let carry = "";
       (async () => {
+        // stream-extra ReadableStream is structurally compatible with the
+        // DOM one, but its TypeScript declaration lacks the global
+        // `[Symbol.asyncIterator]` augmentation — so we can't `for await`
+        // directly without a cast. Pull a reader explicitly instead; the
+        // runtime API is identical.
+        const stream = proc.stdout as unknown as ReadableStream<Uint8Array>;
+        const reader = stream.getReader();
         try {
-          for await (const chunk of proc.stream) {
-            const text = decoder.decode(chunk, { stream: true });
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const text = decoder.decode(value, { stream: true });
             const parts = (carry + text).split("\n");
             carry = parts.pop() ?? ""; // last incomplete line
             if (paused) {
@@ -260,6 +269,8 @@ export function LogcatPanel({ session }: Props) {
             (paused ? pausedBufferRef.current : linesRef.current).push(carry);
           }
           flush();
+        } finally {
+          reader.releaseLock();
         }
       })();
     } catch (e) {

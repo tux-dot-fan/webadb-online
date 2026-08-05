@@ -11,9 +11,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@yume-chan/adb": "^2.6.2",
-    "@yume-chan/adb-daemon-webusb": "^2.3.2",
-    "@yume-chan/stream-extra": "^2.6.1",
+    "@yume-chan/adb": "^3.0.0-beta.1",
+    "@yume-chan/adb-credential-web": "^3.0.0-beta.1",
+    "@yume-chan/adb-daemon-webusb": "^3.0.0-beta.1",
+    "@yume-chan/stream-extra": "^3.0.0-beta.1",
     "next": "^15.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"

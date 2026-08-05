@@ -8,6 +8,52 @@ interface Props {
   session: AdbSession;
 }
 
+/**
+ * Run a one-shot command and collect its stdout. Prefers Shell V2 (separate
+ * stderr + exit code), falls back to "none" protocol otherwise. Lifted out of
+ * the component so the same helper can be reused elsewhere.
+ */
+async function runCommand(
+  session: AdbSession,
+  args: readonly string[],
+): Promise<string> {
+  const shell = session.adb.subprocess.shellProtocol;
+  if (shell && shell.isSupported) {
+    // `shell.spawn` is typed as `AdbShellProtocolSpawner`, which returns a
+    // Promise that ALSO has a `.wait()` method (added dynamically by the
+    // spawner implementation). If we `await` first we lose the typed
+    // access to `.wait()`, so we call `.wait()` directly on the returned
+    // spawner object.
+    const wait = await shell.spawn(args).wait();
+    const stdout = await wait.stdout.toString();
+    if (wait.exitCode !== 0) {
+      const stderr = await wait.stderr.toString();
+      throw new Error(
+        `Command exited with code ${wait.exitCode}\n` +
+          (stderr.trim() || stdout.trim() || "(no output)"),
+      );
+    }
+    return stdout;
+  }
+  // Fallback: none protocol — read mixed output until process exits.
+  const proc = await session.adb.subprocess.noneProtocol.spawn(args);
+  const decoder = new TextDecoder();
+  let text = "";
+  const reader = proc.output.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+  } finally {
+    reader.releaseLock();
+  }
+  await proc.exited;
+  return text;
+}
+
 export function ShellPanel({ session }: Props) {
   const [history, setHistory] = useState<string[]>([
     "# Shell session — type a command and press Enter.",
@@ -34,7 +80,7 @@ export function ShellPanel({ session }: Props) {
     setInput("");
     try {
       const args = tokenize(trimmed);
-      const out = await session.adb.subprocess.noneProtocol.spawnWaitText(args);
+      const out = await runCommand(session, args);
       const text = out.trimEnd();
       setHistory((h) => [...h, text.length ? text : "(no output)"]);
     } catch (e) {

@@ -1,25 +1,29 @@
 /**
- * ADB session — wraps @yume-chan/adb + WebUSB transport.
+ * ADB session — wraps @yume-chan/adb 3.0 + WebUSB transport.
  *
  * Lives entirely client-side. Browser must support WebUSB (Chrome, Edge, Opera
  * on desktop; not Safari/Firefox) and the page must be served cross-origin
  * isolated (COOP/COEP headers, see next.config.mjs).
  *
- * Authentication flow (matches @yume-chan/adb 2.6.x):
+ * Authentication flow (matches @yume-chan/adb 3.0):
  *   1. manager.requestDevice() → AdbDaemonWebUsbDevice | undefined (user cancel)
- *   2. device.connect() → AdbDaemonConnection (raw bytes)
- *   3. AdbDaemonTransport.authenticate({ serial, connection, credentialStore })
+ *   2. device.connect() → AdbDaemonConnection (raw byte pair)
+ *   3. adbDaemonAuthenticate({ serial, connection, credentialManager })
  *      → fully-negotiated transport (handshake + banner + maxPayloadSize)
  *   4. new Adb(transport) → high-level API
  */
 
-import { Adb, AdbDaemonTransport } from "@yume-chan/adb";
+import { Adb, adbDaemonAuthenticate } from "@yume-chan/adb";
 import {
   AdbDaemonWebUsbDevice,
   AdbDaemonWebUsbDeviceManager,
   AdbDefaultInterfaceFilter,
   mergeDefaultAdbInterfaceFilter,
 } from "@yume-chan/adb-daemon-webusb";
+import {
+  AdbWebCryptoCredentialManager,
+  TangoLocalStorage,
+} from "@yume-chan/adb-credential-web";
 
 export type ConnectionState =
   | { kind: "disconnected" }
@@ -30,7 +34,6 @@ export type ConnectionState =
 
 export interface AdbSession {
   readonly adb: Adb;
-  readonly transport: AdbDaemonTransport;
   readonly device: AdbDaemonWebUsbDevice;
   readonly disconnected: Promise<void>;
 }
@@ -48,20 +51,37 @@ export interface AdbSession {
  */
 const ADB_DEFAULT_FILTERS = mergeDefaultAdbInterfaceFilter(undefined);
 
-// Auth credentials are intentionally not stored — webadb.online never sees a
-// private key. If a device requires RSA authentication, the user must tap
-// "Always allow from this computer" on the phone the first time, after which
-// the device remembers the public key for the host and re-auth is skipped.
-// If the device still demands auth (no stored key on its side), this empty
-// store lets the handshake fail loudly instead of pretending to be authenticated.
-const NO_CREDENTIAL_STORE = {
-  generateKey: async () => {
-    throw new Error(
-      "RSA auth not supported by this build. Tap 'Always allow' on the device dialog.",
-    );
-  },
-  iterateKeys: () => [].values(),
-} satisfies import("@yume-chan/adb").AdbCredentialStore;
+/**
+ * ADB host authentication. The adb protocol requires the host to hold an
+ * RSA 2048 private key (the public counterpart is sent to the device during
+ * the handshake so the device can verify a later `signature` challenge).
+ *
+ * webadb.online has no backend, so the key is generated in-browser via Web
+ * Crypto and persisted in localStorage. The same key survives across
+ * reloads, so the device only prompts the user to approve the host on the
+ * FIRST connection. Subsequent reconnects use the stored key and the device
+ * trusts it automatically (the user already tapped "Always allow" once).
+ *
+ * 3.0 implementation: `AdbWebCryptoCredentialManager` from
+ * `@yume-chan/adb-credential-web`. It generates a fresh RSA-2048 key on
+ * first connect, persists the PKCS#8 PrivateKeyInfo bytes (base64-encoded)
+ * to localStorage via `TangoLocalStorage`, and on reconnect reads it back
+ * and feeds the whole PKCS#8 buffer to `rsaParsePrivateKey` — which uses
+ * fixed offsets (n at byte 38, d at byte 303) that line up exactly with
+ * PKCS#8 PrivateKeyInfo for an RSA-2048 key with e=65537.
+ *
+ * Privacy: the key never leaves the browser. It is stored in localStorage
+ * (origin-scoped), not transmitted. Clearing browser storage forces
+ * regeneration on the next connection, which will require the user to tap
+ * "Allow" on the device dialog again.
+ */
+const ADB_KEY_STORAGE_KEY = "webadb.online:adbd-rsa-credential";
+const ADB_KEY_NAME = "webadb.online";
+
+const CREDENTIAL_MANAGER = new AdbWebCryptoCredentialManager(
+  new TangoLocalStorage(ADB_KEY_STORAGE_KEY),
+  ADB_KEY_NAME,
+);
 
 export class AdbClient {
   private manager: AdbDaemonWebUsbDeviceManager | null = null;
@@ -141,16 +161,15 @@ export class AdbClient {
       this.setState({ kind: "connecting", deviceLabel: label });
 
       const connection = await device.connect();
-      const transport = await AdbDaemonTransport.authenticate({
+      const transport = await adbDaemonAuthenticate({
         serial: device.serial,
         connection,
-        credentialStore: NO_CREDENTIAL_STORE,
+        credentialManager: CREDENTIAL_MANAGER,
       });
 
       const adb = new Adb(transport);
       const session: AdbSession = {
         adb,
-        transport,
         device,
         disconnected: this.watchDisconnect(device, transport),
       };
@@ -220,7 +239,7 @@ export class AdbClient {
   async getDeviceIp(): Promise<string | null> {
     const s = this.requireSession();
     try {
-      const out = await s.adb.subprocess.noneProtocol.spawnWaitText([
+      const out = await spawnText(s.adb, [
         "sh",
         "-c",
         // `ip -o addr` gives one line per addr; we grep for global IPv4 and
@@ -236,10 +255,7 @@ export class AdbClient {
     }
     // Fallback: parse `ip addr` output (older Android).
     try {
-      const out = await s.adb.subprocess.noneProtocol.spawnWaitText([
-        "ip",
-        "addr",
-      ]);
+      const out = await spawnText(s.adb, ["ip", "addr"]);
       const m = out.match(/inet (\d{1,3}(?:\.\d{1,3}){3})\//);
       if (m) return m[1];
     } catch {
@@ -254,7 +270,7 @@ export class AdbClient {
    */
   async listInstalledPackages(): Promise<PackageInfo[]> {
     const s = this.requireSession();
-    const out = await s.adb.subprocess.noneProtocol.spawnWaitText([
+    const out = await spawnText(s.adb, [
       "pm",
       "list",
       "packages",
@@ -267,11 +283,7 @@ export class AdbClient {
   /** Uninstall an app by package name. Returns true on success. */
   async uninstallPackage(packageName: string): Promise<boolean> {
     const s = this.requireSession();
-    const out = await s.adb.subprocess.noneProtocol.spawnWaitText([
-      "pm",
-      "uninstall",
-      packageName,
-    ]);
+    const out = await spawnText(s.adb, ["pm", "uninstall", packageName]);
     return /Success/i.test(out);
   }
 
@@ -284,7 +296,7 @@ export class AdbClient {
     // `cmd package resolve-activity --brief <pkg>` prints the activity name on
     // the last line (e.g. "com.example/.MainActivity"). Using -c android.intent
     // .category.LAUNCHER restricts to launcher activities.
-    const resolved = await s.adb.subprocess.noneProtocol.spawnWaitText([
+    const resolved = await spawnText(s.adb, [
       "cmd",
       "package",
       "resolve-activity",
@@ -297,12 +309,7 @@ export class AdbClient {
         `Couldn't resolve launch activity for ${packageName}. Resolved: "${activity}"`,
       );
     }
-    return s.adb.subprocess.noneProtocol.spawnWaitText([
-      "am",
-      "start",
-      "-n",
-      activity,
-    ]);
+    return spawnText(s.adb, ["am", "start", "-n", activity]);
   }
 
   /**
@@ -310,36 +317,32 @@ export class AdbClient {
    * and killing the process. Used by the Logcat panel — it spawns, pipes
    * stdout into the UI, and kills on unmount.
    *
-   * Returns a getter for the async iterable (lazy: calling it starts the
-   * reader). The reader is a single-shot AsyncIterable — create a new one if
-   * you need to consume the stream again.
+   * Returns the process (with `stdout` as a `ReadableStream<Uint8Array>` and
+   * a `kill()` method). The caller can `for await` over `process.stdout` after
+   * adapting it to an async iterable, or pipe it through a `TextDecoderStream`.
    */
   async startLogcat(args: string[] = []): Promise<{
     kill(): void;
-    stream: AsyncIterableIterator<Uint8Array>;
+    stdout: ReadableStream<Uint8Array>;
   }> {
     const s = this.requireSession();
+    // Shell V2 protocol gives us separate stdout/stderr and an exit code,
+    // which is what logcat needs (otherwise a long-running process would
+    // never finish and we'd hang waiting for it).
     const shell = s.adb.subprocess.shellProtocol;
-    if (!shell) {
+    if (!shell || !shell.isSupported) {
       throw new Error("Device doesn't support Shell V2 protocol");
     }
     const proc = await shell.spawn(["logcat", ...args]);
-    // Wrap the native ReadableStream into our AsyncIterableIterator helper.
-    // We do the conversion eagerly here so the caller can simply `for await`
-    // over `stream` without having to call a function.
-    const iterable = streamFromAsyncIterable(
-      proc.stdout as unknown as ReadableStream<Uint8Array>,
-    );
-    const killFn = () => {
-      try {
-        void proc.kill();
-      } catch {
-        // ignore
-      }
-    };
     return {
-      kill: killFn,
-      stream: iterable,
+      kill: () => {
+        try {
+          void proc.kill();
+        } catch {
+          // ignore
+        }
+      },
+      stdout: proc.stdout as ReadableStream<Uint8Array>,
     };
   }
 
@@ -352,7 +355,7 @@ export class AdbClient {
 
   private watchDisconnect(
     device: AdbDaemonWebUsbDevice,
-    transport: AdbDaemonTransport,
+    transport: { disconnected: Promise<void> },
   ): Promise<void> {
     return new Promise<void>((resolve) => {
       let settled = false;
@@ -419,21 +422,48 @@ function parsePackageList(text: string): PackageInfo[] {
 }
 
 /**
- * Convert a Web ReadableStream<Uint8Array> to an async iterable. Used for
- * logcat streaming — React effects can't consume streams directly, but they
- * can `for await` over async iterables.
+ * Run a short-lived command and collect its full stdout as text. Tries the
+ * Shell V2 protocol first (so we get separate stderr and a real exit code),
+ * but falls back to the legacy "none" protocol if V2 isn't supported.
+ *
+ * On 3.0, `spawn` returns a process with a `wait()` method (lazy) that
+ * accumulates stdout/stderr. This is a thin convenience wrapper.
  */
-async function* streamFromAsyncIterable(
-  stream: ReadableStream<Uint8Array>,
-): AsyncIterableIterator<Uint8Array> {
-  const reader = stream.getReader();
+async function spawnText(adb: Adb, command: readonly string[]): Promise<string> {
+  const shell = adb.subprocess.shellProtocol;
+  if (shell && shell.isSupported) {
+    // `shell.spawn(...)` returns a lazy promise that's also a `Wait` helper:
+    //   - `await proc` → AdbShellProtocolProcess (with stdio streams)
+    //   - `proc.wait()` → { stdout, stderr, exitCode } | string-via-.toString()
+    // We want the wait helper to collect everything and decode the buffers.
+    const procPromise = shell.spawn(command);
+    const result = await procPromise.wait();
+    const stdout = await result.stdout.toString();
+    if (result.exitCode !== 0) {
+      const stderr = await result.stderr.toString();
+      throw new Error(
+        `Command failed (exit ${result.exitCode}): ${command.join(" ")}\n` +
+          (stderr || stdout),
+      );
+    }
+    return stdout;
+  }
+  // Fallback: none-protocol has no `wait()` helper, so we accumulate
+  // output manually.
+  const proc = await adb.subprocess.noneProtocol.spawn(command);
+  const decoder = new TextDecoder();
+  let text = "";
+  const reader = proc.output.getReader();
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) return;
-      if (value) yield value;
+      if (done) break;
+      if (value) text += decoder.decode(value, { stream: true });
     }
+    text += decoder.decode();
   } finally {
     reader.releaseLock();
   }
+  await proc.exited;
+  return text;
 }

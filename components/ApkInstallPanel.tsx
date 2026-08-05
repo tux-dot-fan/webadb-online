@@ -25,40 +25,37 @@ export function ApkInstallPanel({ session }: Props) {
       const buf = new Uint8Array(await f.arrayBuffer());
       setProgress(`Pushing ${f.name}…`);
       const remotePath = `/data/local/tmp/${f.name.replace(/[^A-Za-z0-9._-]/g, "_")}`;
-      const sync = await session.adb.sync();
-      await sync.write({
+      await session.adb.sync.write({
         filename: remotePath,
         // `file` accepts a Web ReadableStream<MaybeConsumable<Uint8Array>>.
-        // The cast is safe: we only ever enqueue Uint8Array (which is the
-        // non-Consumable variant of MaybeConsumable).
+        // We wrap our raw Uint8Array in a single-shot stream. The cast is
+        // safe: Uint8Array is the non-Consumable variant of MaybeConsumable.
         file: new ReadableStream({
           start(controller) {
             controller.enqueue(buf);
             controller.close();
           },
-        }) as unknown as Parameters<typeof sync.write>[0]["file"],
+        }) as unknown as Parameters<typeof session.adb.sync.write>[0]["file"],
       });
       setProgress(`Installing via pm install…`);
       const shell = session.adb.subprocess.shellProtocol;
-      if (!shell) {
+      if (!shell || !shell.isSupported) {
         throw new Error("Device doesn't support Shell V2 protocol");
       }
-      const result = await shell.spawnWaitText([
-        "pm",
-        "install",
-        "-r",
-        "-t",
-        remotePath,
-      ]);
-      if (!/Success/i.test(result.stdout)) {
-        throw new Error(`pm install returned:\n${result.stdout.trim()}`);
+      const result = shell.spawn(["pm", "install", "-r", "-t", remotePath]);
+      const waitResult = await result.wait();
+      const stdout = await waitResult.stdout.toString();
+      if (waitResult.exitCode !== 0 || !/Success/i.test(stdout)) {
+        const stderr = await waitResult.stderr.toString();
+        throw new Error(
+          `pm install returned exit ${waitResult.exitCode}:\n` +
+            (stdout.trim() || stderr.trim() || "(no output)"),
+        );
       }
-      setLast(`Installed ${f.name} → ${result.stdout.trim()}`);
+      setLast(`Installed ${f.name} → ${stdout.trim()}`);
       setProgress(null);
       // Clean up the temp file (best effort).
-      shell
-        .spawnWaitText(["rm", "-f", remotePath])
-        .catch(() => {});
+      shell.spawn(["rm", "-f", remotePath]).wait().catch(() => {});
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setProgress(null);
@@ -84,7 +81,7 @@ export function ApkInstallPanel({ session }: Props) {
           padding: "8px 14px",
           borderRadius: 6,
           background: "var(--accent)",
-          color: "#0b0f17",
+          color: "var(--on-accent)",
           fontWeight: 600,
           border: "1px solid var(--accent)",
         }}>

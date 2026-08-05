@@ -28,8 +28,7 @@ export function FileManagerPanel({ session }: Props) {
     setBusy(true);
     setError(null);
     try {
-      const sync = await session.adb.sync();
-      const raw = await sync.readdir(path);
+      const raw = await session.adb.sync.readdir(path);
       const out: Entry[] = raw.map((e) => ({
         name: e.name,
         mode: e.mode,
@@ -57,8 +56,11 @@ export function FileManagerPanel({ session }: Props) {
     if (entry.type !== LinuxFileType.File) return;
     const remote = `${cwd}/${entry.name}`;
     try {
-      const sync = await session.adb.sync();
-      const stream = sync.read(remote);
+      // `session.adb.sync.read` returns a stream-extra ReadableStream, not a
+      // standard DOM one — the runtime contract is the same, but the types
+      // differ in subtle ways (e.g. `pipeThrough` overloads). Cast for the
+      // type system, the runtime API matches what we use below.
+      const stream = session.adb.sync.read(remote) as unknown as ReadableStream<Uint8Array>;
       const blob = await streamToBlob(stream);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -90,15 +92,14 @@ export function FileManagerPanel({ session }: Props) {
       const remoteName = f.name.replace(/[^A-Za-z0-9._-]/g, "_");
       const remotePath = `${cwd === "/" ? "" : cwd}/${remoteName}`;
       setUploadStatus(`Uploading to ${remotePath}…`);
-      const sync = await session.adb.sync();
-      await sync.write({
+      await session.adb.sync.write({
         filename: remotePath,
         file: new ReadableStream({
           start(controller) {
             controller.enqueue(buf);
             controller.close();
           },
-        }) as unknown as Parameters<typeof sync.write>[0]["file"],
+        }) as unknown as Parameters<typeof session.adb.sync.write>[0]["file"],
       });
       setUploadStatus(`Uploaded → ${remotePath}`);
       // Refresh the listing.
@@ -227,9 +228,7 @@ export function FileManagerPanel({ session }: Props) {
   );
 }
 
-async function streamToBlob(
-  stream: import("@yume-chan/stream-extra").ReadableStream<Uint8Array>,
-): Promise<Blob> {
+async function streamToBlob(stream: ReadableStream<Uint8Array>): Promise<Blob> {
   const parts: BlobPart[] = [];
   const reader = stream.getReader();
   while (true) {
