@@ -68,35 +68,49 @@ export function ShellPanel({ session }: Props) {
         import("@xterm/addon-fit"),
       ]);
 
+      // Terminal font: JetBrains Mono is legible at small sizes, has good
+      // distinction between 0/O and 1/l/I, and includes box-drawing chars.
+      // CJK users may prefer a system CJK monospace — let the OS pick.
+      const fontFamily =
+        '"JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace';
+
       const term = new Terminal({
-        fontSize: 13,
-        fontFamily:
-          'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+        fontSize: 14,
+        fontFamily,
+        fontWeight: "400",
+        fontWeightBold: "700",
         cursorBlink: true,
-        // ANSI 16-color palette. The dark values match our dark theme
-        // tokens (`--accent` etc.) so colored ls / grep / htop output
-        // stays consistent with the rest of the page.
+        cursorStyle: "block",
+        // Dark background — no conflict with light/dark page theme. The
+        // terminal always stays dark so white/green text pops clearly.
         theme: {
-          background: "#0b0f17",
-          foreground: "#e6ebf5",
-          cursor: "#e6ebf5",
-          black: "#1a2236",
-          red: "#ff6b6b",
-          green: "#51d88a",
-          yellow: "#ffb547",
-          blue: "#4ea1ff",
-          magenta: "#c678dd",
-          cyan: "#56b6c2",
-          white: "#e6ebf5",
-          brightBlack: "#5c6370",
-          brightRed: "#ff8787",
-          brightGreen: "#7ed4a8",
-          brightYellow: "#ffcb6b",
-          brightBlue: "#7eb8ff",
-          brightMagenta: "#e29bf2",
-          brightCyan: "#9bd6e2",
+          background: "#0d1117",
+          foreground: "#e6edf3",
+          cursor: "#e6edf3",
+          // Selection / highlight
+          selectionBackground: "rgba(78, 161, 255, 0.25)",
+          // ANSI 16-color palette — GitHub Dark palette (familiar to devs,
+          // high contrast on dark background, not garish neon).
+          black: "#0d1117",
+          red: "#ff7b72",
+          green: "#3fb950",
+          yellow: "#d29922",
+          blue: "#58a6ff",
+          magenta: "#bc8cff",
+          cyan: "#39c5cf",
+          white: "#e6edf3",
+          brightBlack: "#484f58",
+          brightRed: "#ffa198",
+          brightGreen: "#56d364",
+          brightYellow: "#e3b341",
+          brightBlue: "#79c0ff",
+          brightMagenta: "#d2a8ff",
+          brightCyan: "#56d4dd",
           brightWhite: "#ffffff",
         },
+        scrollback: 10_000,
+        allowTransparency: false,
+        convertEol: true,
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -222,9 +236,10 @@ export function ShellPanel({ session }: Props) {
         className="xterm-container"
         style={{
           height: 480,
+          // Always dark — contrast with both light/dark page themes.
+          background: "#0d1117",
           border: "1px solid var(--border)",
           borderRadius: 6,
-          background: "var(--bg)",
           overflow: "hidden",
         }}
       />

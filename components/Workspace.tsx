@@ -18,7 +18,13 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 
 type Tab = "shell" | "apps" | "logcat" | "files" | "screenshot" | "apk" | "wifi";
 
-export function Workspace() {
+interface WorkspaceProps {
+  buildVersion: string;
+  buildGitHash: string;
+  buildTimestamp: string;
+}
+
+export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: WorkspaceProps) {
   const state = useAdbState();
   const session = useAdbSession();
   const supported = useAdbSupported();
@@ -93,11 +99,18 @@ export function Workspace() {
       </main>
 
       <footer className="site-footer">
+        <span>
+          WebADB <span title={`Git: ${buildGitHash}`}>v{buildVersion}</span>
+          {buildGitHash !== "dev" && (
+            <> · <code style={{ fontSize: 12 }}>{buildGitHash}</code></>
+          )}
+        </span>
+        {" · "}
         Built with{" "}
         <a href="https://github.com/yume-chan/ya-webadb" target="_blank" rel="noopener noreferrer">
           ya-webadb
-        </a>{" "}
-        · Source on{" "}
+        </a>
+        {" · Source on "}
         <a href="https://github.com/tux-dot-fan/webadb-online" target="_blank" rel="noopener noreferrer">
           GitHub
         </a>

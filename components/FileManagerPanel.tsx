@@ -16,6 +16,24 @@ interface Entry {
   type: LinuxFileType;
 }
 
+/** Entries that are safe to attempt as inline preview */
+const PREVIEWABLE_TEXT = [
+  ".txt", ".log", ".json", ".xml", ".html", ".htm",
+  ".css", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".c", ".cpp",
+  ".h", ".hpp", ".py", ".sh", ".bash", ".zsh", ".yaml", ".yml",
+  ".toml", ".ini", ".cfg", ".conf", ".properties", ".md", ".rst",
+  ".gradle", ".kt", ".java", ".smali", ".prop", ".rc", ".gitignore",
+  ".env", ".csv", ".tsv", ".sql", ".go", ".rs", ".rb", ".php",
+];
+const PREVIEWABLE_IMAGE = [
+  ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".ico", ".svg",
+  ".avif",
+];
+const PREVIEWABLE_VIDEO = [
+  ".mp4", ".mkv", ".webm", ".avi", ".mov", ".3gp", ".flv", ".wmv",
+  ".m4v",
+];
+
 export function FileManagerPanel({ session }: Props) {
   const [cwd, setCwd] = useState("/sdcard");
   const [entries, setEntries] = useState<Entry[] | null>(null);
@@ -23,6 +41,12 @@ export function FileManagerPanel({ session }: Props) {
   const [busy, setBusy] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [preview, setPreview] = useState<{
+    url: string;
+    name: string;
+    kind: "text" | "image" | "video" | "binary";
+    content?: string;
+  } | null>(null);
 
   async function list(path: string) {
     setBusy(true);
@@ -52,14 +76,54 @@ export function FileManagerPanel({ session }: Props) {
     }
   }
 
+  async function previewFile(entry: Entry) {
+    if (entry.type !== LinuxFileType.File) return;
+    const remote = `${cwd === "/" ? "" : cwd}/${entry.name}`;
+    const ext = entry.name
+      .toLowerCase()
+      .match(/\.[^.]+$/)?.[0] ?? "";
+
+    try {
+      const stream = session.adb.sync.read(remote) as unknown as ReadableStream<Uint8Array>;
+
+      if (PREVIEWABLE_TEXT.includes(ext)) {
+        // Text — read up to 512 KB inline
+        if (entry.size > 512 * 1024) {
+          setError(`Text file too large (${formatSize(entry.size)}). Download it to view.`);
+          return;
+        }
+        const blob = await streamToBlob(stream);
+        const text = await blob.text();
+        setPreview({ url: "", name: entry.name, kind: "text", content: text });
+      } else if (PREVIEWABLE_IMAGE.includes(ext)) {
+        if (entry.size > 100 * 1024 * 1024) {
+          setError(`Image too large (${formatSize(entry.size)}). Download it to view.`);
+          return;
+        }
+        const blob = await streamToBlob(stream);
+        const url = URL.createObjectURL(blob);
+        setPreview({ url, name: entry.name, kind: "image" });
+      } else if (PREVIEWABLE_VIDEO.includes(ext)) {
+        if (entry.size > 500 * 1024 * 1024) {
+          setError(`Video too large (${formatSize(entry.size)}). Download it to view.`);
+          return;
+        }
+        const blob = await streamToBlob(stream);
+        const url = URL.createObjectURL(blob);
+        setPreview({ url, name: entry.name, kind: "video" });
+      } else {
+        // Binary / unknown — offer download
+        setPreview({ url: "", name: entry.name, kind: "binary" });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
   async function download(entry: Entry) {
     if (entry.type !== LinuxFileType.File) return;
-    const remote = `${cwd}/${entry.name}`;
+    const remote = `${cwd === "/" ? "" : cwd}/${entry.name}`;
     try {
-      // `session.adb.sync.read` returns a stream-extra ReadableStream, not a
-      // standard DOM one — the runtime contract is the same, but the types
-      // differ in subtle ways (e.g. `pipeThrough` overloads). Cast for the
-      // type system, the runtime API matches what we use below.
       const stream = session.adb.sync.read(remote) as unknown as ReadableStream<Uint8Array>;
       const blob = await streamToBlob(stream);
       const url = URL.createObjectURL(blob);
@@ -73,6 +137,11 @@ export function FileManagerPanel({ session }: Props) {
     }
   }
 
+  function closePreview() {
+    if (preview?.url) URL.revokeObjectURL(preview.url);
+    setPreview(null);
+  }
+
   function parent(): string {
     if (cwd === "/") return "/";
     const parts = cwd.split("/").filter(Boolean);
@@ -82,7 +151,7 @@ export function FileManagerPanel({ session }: Props) {
 
   async function onUpload(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
-    e.target.value = ""; // allow re-selecting the same file
+    e.target.value = "";
     if (!f) return;
     setUploading(true);
     setUploadStatus(`Reading ${f.name} (${formatSize(f.size)})…`);
@@ -102,7 +171,6 @@ export function FileManagerPanel({ session }: Props) {
         }) as unknown as Parameters<typeof session.adb.sync.write>[0]["file"],
       });
       setUploadStatus(`Uploaded → ${remotePath}`);
-      // Refresh the listing.
       await list(cwd);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -114,10 +182,10 @@ export function FileManagerPanel({ session }: Props) {
 
   return (
     <section className="panel">
-      <h2>Files</h2>
+      <h2>File Manager</h2>
       <p className="panel-desc">
-        Browse and download files. Read-only for now — safe to explore without
-        risk to your device.
+        Browse files and folders on your device. Click a file to preview
+        (text, image, video), or double-click to download.
       </p>
 
       <div className="row" style={{ marginBottom: 10 }}>
@@ -192,14 +260,20 @@ export function FileManagerPanel({ session }: Props) {
           {entries.map((e) => (
             <div
               key={e.name}
-              className={`row ${e.type === LinuxFileType.Directory ? "clickable" : ""}`}
+              className={`row ${e.type === LinuxFileType.Directory ? "clickable" : "clickable"}`}
               onClick={() => {
                 if (e.type === LinuxFileType.Directory) {
                   void list(`${cwd === "/" ? "" : cwd}/${e.name}`);
+                } else {
+                  void previewFile(e);
                 }
               }}
               onDoubleClick={() => void download(e)}
-              title={e.type === LinuxFileType.Directory ? "Click to open" : "Double-click to download"}
+              title={
+                e.type === LinuxFileType.Directory
+                  ? "Click to open"
+                  : "Single-click to preview · Double-click to download"
+              }
             >
               <div style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
                 {e.type === LinuxFileType.Link
@@ -220,8 +294,171 @@ export function FileManagerPanel({ session }: Props) {
 
       {entries === null && !error && !busy && (
         <div className="muted" style={{ padding: "12px 0" }}>
-          Press <span className="kbd">Go</span> or hit <span className="kbd">Enter</span>{" "}
-          to list <code>{cwd}</code>.
+          Press <span className="kbd">Go</span> or hit{" "}
+          <span className="kbd">Enter</span> to list <code>{cwd}</code>.
+        </div>
+      )}
+
+      {/* Preview modal */}
+      {preview && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 20,
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) void closePreview();
+          }}
+        >
+          <div
+            style={{
+              background: "var(--bg-elev)",
+              border: "1px solid var(--border)",
+              borderRadius: 12,
+              maxWidth: 900,
+              width: "100%",
+              maxHeight: "85vh",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+          >
+            {/* Modal header */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "12px 16px",
+                borderBottom: "1px solid var(--border)",
+                flexShrink: 0,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: "var(--mono)",
+                  fontSize: 13,
+                  color: "var(--text-dim)",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {preview.name}
+              </span>
+              <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                {preview.kind !== "text" && (
+                  <button
+                    onClick={() => void download({ name: preview.name, type: LinuxFileType.File, mode: 0, size: 0, mtime: 0 } as Entry)}
+                    style={{ padding: "4px 12px", fontSize: 13 }}
+                  >
+                    Download
+                  </button>
+                )}
+                <button
+                  onClick={closePreview}
+                  style={{ padding: "4px 10px", fontSize: 13 }}
+                  aria-label="Close preview"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            {/* Modal body */}
+            <div
+              style={{
+                flex: 1,
+                overflow: "auto",
+                padding: 16,
+              }}
+            >
+              {preview.kind === "text" && preview.content !== undefined && (
+                <pre
+                  style={{
+                    margin: 0,
+                    fontFamily: "var(--mono)",
+                    fontSize: 12,
+                    color: "var(--text)",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-all",
+                    maxHeight: "65vh",
+                    overflow: "auto",
+                    background: "var(--bg)",
+                    padding: 12,
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                  }}
+                >
+                  {preview.content}
+                </pre>
+              )}
+              {preview.kind === "image" && preview.url && (
+                <img
+                  src={preview.url}
+                  alt={preview.name}
+                  style={{
+                    maxWidth: "100%",
+                    maxHeight: "65vh",
+                    display: "block",
+                    margin: "0 auto",
+                    borderRadius: 6,
+                    objectFit: "contain",
+                  }}
+                />
+              )}
+              {preview.kind === "video" && preview.url && (
+                <video
+                  controls
+                  autoPlay
+                  src={preview.url}
+                  style={{
+                    maxWidth: "100%",
+                    maxHeight: "65vh",
+                    display: "block",
+                    margin: "0 auto",
+                    borderRadius: 6,
+                  }}
+                >
+                  Your browser does not support this video format.
+                </video>
+              )}
+              {preview.kind === "binary" && (
+                <div
+                  style={{
+                    textAlign: "center",
+                    padding: "40px 20px",
+                    color: "var(--text-dim)",
+                  }}
+                >
+                  <div style={{ fontSize: 32, marginBottom: 12 }}>📄</div>
+                  <p style={{ margin: "0 0 16px" }}>
+                    No preview available for this file type.
+                  </p>
+                  <button
+                    onClick={() =>
+                      void download({
+                        name: preview.name,
+                        type: LinuxFileType.File,
+                        mode: 0,
+                        size: 0,
+                        mtime: 0,
+                      } as Entry)
+                    }
+                    className="primary"
+                  >
+                    Download
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </section>
