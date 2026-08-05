@@ -346,6 +346,60 @@ export class AdbClient {
     };
   }
 
+  /**
+   * Start an interactive PTY (pseudo-terminal) shell. The returned object
+   * exposes a `WritableStream` (`input`) for bytes the terminal sends and a
+   * `ReadableStream` (`output`) for bytes the device sends back — the
+   * standard xterm.js pipe contract.
+   *
+   * Requires Shell V2 protocol (the only one that exposes a true PTY with
+   * window-resize support). The shell is started as `sh -i` (interactive).
+   * The returned `resize(rows, cols)` lets the terminal notify the device
+   * when the viewport changes.
+   *
+   * `kill()` tears down both streams. The caller is expected to pipe
+   * `output` into xterm.js and write `xterm.onData` bytes into `input`.
+   */
+  async startShellPty(args: string[] = ["sh"]): Promise<{
+    input: WritableStream<Uint8Array>;
+    output: ReadableStream<Uint8Array>;
+    resize(rows: number, cols: number): Promise<void>;
+    sigint(): Promise<void>;
+    kill(): void;
+  }> {
+    const s = this.requireSession();
+    const shell = s.adb.subprocess.shellProtocol;
+    if (!shell || !shell.isSupported) {
+      throw new Error(
+        "Interactive shell requires Shell V2 protocol — not supported on this device",
+      );
+    }
+    // `pty()` opens the ADB shell service in PTY mode: the device allocates
+    // a real pty with line discipline, so things like Ctrl+C (SIGINT),
+    // arrow-key editing in `readline`, and `vim` actually work. Plain
+    // `shellProtocol.spawn(["sh"])` runs in cooked mode and skips the
+    // line discipline, which makes it unusable as a terminal.
+    const pty = await shell.pty({ command: args, terminalType: "xterm-256color" });
+    // Cast stream-extra WritableStream to a standard WritableStream so
+    // xterm.js can write directly into it. The runtime contract is the
+    // standard WHATWG streams one.
+    const input = pty.input as unknown as WritableStream<Uint8Array>;
+    const output = pty.output as unknown as ReadableStream<Uint8Array>;
+    return {
+      input,
+      output,
+      resize: (rows, cols) => pty.resize(rows, cols),
+      sigint: () => pty.sigint(),
+      kill: () => {
+        try {
+          void pty.kill();
+        } catch {
+          // ignore — may already be dead
+        }
+      },
+    };
+  }
+
   private requireSession(): AdbSession {
     if (!this.session) {
       throw new Error("Not connected to a device");

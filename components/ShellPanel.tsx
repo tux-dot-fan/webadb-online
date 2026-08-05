@@ -1,165 +1,264 @@
 "use client";
 
-import { useState, useRef, useEffect, type FormEvent } from "react";
+/**
+ * Interactive shell panel — a full xterm.js terminal wired up to an ADB
+ * PTY session. The earlier implementation ran one-shot commands via
+ * `subprocess.shellProtocol.spawn()` and accumulated the output as text —
+ * which means `vim`, `top`, arrow-key editing, Ctrl+C, Tab completion,
+ * etc. all didn't work.
+ *
+ * This version opens a true PTY (`shellProtocol.pty()`), which allocates
+ * a real pseudo-terminal on the device with full line discipline, so:
+ *   - arrow keys for history / line edit
+ *   - Ctrl+C to interrupt a running process
+ *   - Tab completion
+ *   - 256-color output from programs like `ls --color` or `htop`
+ *   - window resize when the user drags the terminal edge
+ *
+ * Tradeoffs: xterm.js adds ~120 kB gzipped to the bundle (one-time cost
+ * — only loaded when this panel actually mounts) and needs the browser
+ * to hand a font to the canvas glyph renderer. We lazy-load it via
+ * dynamic import so it doesn't bloat the home-page bundle.
+ */
+
+import { useEffect, useRef, useState } from "react";
 import type { AdbSession } from "@/lib/adb-client";
-import { escapeArg } from "@yume-chan/adb";
+import { getAdbClient, type AdbClient } from "@/lib/adb-client";
 
 interface Props {
   session: AdbSession;
 }
 
-/**
- * Run a one-shot command and collect its stdout. Prefers Shell V2 (separate
- * stderr + exit code), falls back to "none" protocol otherwise. Lifted out of
- * the component so the same helper can be reused elsewhere.
- */
-async function runCommand(
-  session: AdbSession,
-  args: readonly string[],
-): Promise<string> {
-  const shell = session.adb.subprocess.shellProtocol;
-  if (shell && shell.isSupported) {
-    // `shell.spawn` is typed as `AdbShellProtocolSpawner`, which returns a
-    // Promise that ALSO has a `.wait()` method (added dynamically by the
-    // spawner implementation). If we `await` first we lose the typed
-    // access to `.wait()`, so we call `.wait()` directly on the returned
-    // spawner object.
-    const wait = await shell.spawn(args).wait();
-    const stdout = await wait.stdout.toString();
-    if (wait.exitCode !== 0) {
-      const stderr = await wait.stderr.toString();
-      throw new Error(
-        `Command exited with code ${wait.exitCode}\n` +
-          (stderr.trim() || stdout.trim() || "(no output)"),
-      );
-    }
-    return stdout;
-  }
-  // Fallback: none protocol — read mixed output until process exits.
-  const proc = await session.adb.subprocess.noneProtocol.spawn(args);
-  const decoder = new TextDecoder();
-  let text = "";
-  const reader = proc.output.getReader();
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) text += decoder.decode(value, { stream: true });
-    }
-    text += decoder.decode();
-  } finally {
-    reader.releaseLock();
-  }
-  await proc.exited;
-  return text;
+interface TermHandle {
+  term: import("@xterm/xterm").Terminal;
+  fit: import("@xterm/addon-fit").FitAddon;
+  pty: {
+    kill(): void;
+    resize(r: number, c: number): Promise<void>;
+  };
+  writer: WritableStreamDefaultWriter<Uint8Array>;
+  reader: ReadableStreamDefaultReader<Uint8Array>;
+  cleanup: () => void;
 }
 
 export function ShellPanel({ session }: Props) {
-  const [history, setHistory] = useState<string[]>([
-    "# Shell session — type a command and press Enter.",
-    "# Examples: 'getprop ro.build.version.release', 'ls /sdcard', 'pm list packages'",
-  ]);
-  const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const outRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const handleRef = useRef<TermHandle | null>(null);
+  // Bumping this key on the container <div> forces React to unmount +
+  // remount, which in turn re-runs our setup effect and re-opens a
+  // fresh PTY. Used by the Restart button and by device-switch.
+  const [remountKey, setRemountKey] = useState(0);
+  const [status, setStatus] = useState<"starting" | "running" | "stopped">(
+    "starting",
+  );
+
+  const serial = session.adb.serial;
 
   useEffect(() => {
-    inputRef.current?.focus();
-  }, []);
+    if (!containerRef.current) return;
+    let cancelled = false;
+    let handle: TermHandle | null = null;
 
-  useEffect(() => {
-    outRef.current?.scrollTo({ top: outRef.current.scrollHeight });
-  }, [history]);
+    async function setup() {
+      // Dynamic imports — xterm.js and addon-fit both touch `window` at
+      // import time, so a static import would break SSR. The bundler
+      // puts them in their own chunk, fetched on first panel mount.
+      const [{ Terminal }, { FitAddon }] = await Promise.all([
+        import("@xterm/xterm"),
+        import("@xterm/addon-fit"),
+      ]);
 
-  async function run(cmd: string) {
-    const trimmed = cmd.trim();
-    if (!trimmed || busy) return;
-    setBusy(true);
-    setHistory((h) => [...h, `$ ${trimmed}`]);
-    setInput("");
-    try {
-      const args = tokenize(trimmed);
-      const out = await runCommand(session, args);
-      const text = out.trimEnd();
-      setHistory((h) => [...h, text.length ? text : "(no output)"]);
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setHistory((h) => [...h, `! error: ${msg}`]);
-    } finally {
-      setBusy(false);
-      inputRef.current?.focus();
+      const term = new Terminal({
+        fontSize: 13,
+        fontFamily:
+          'ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace',
+        cursorBlink: true,
+        // ANSI 16-color palette. The dark values match our dark theme
+        // tokens (`--accent` etc.) so colored ls / grep / htop output
+        // stays consistent with the rest of the page.
+        theme: {
+          background: "#0b0f17",
+          foreground: "#e6ebf5",
+          cursor: "#e6ebf5",
+          black: "#1a2236",
+          red: "#ff6b6b",
+          green: "#51d88a",
+          yellow: "#ffb547",
+          blue: "#4ea1ff",
+          magenta: "#c678dd",
+          cyan: "#56b6c2",
+          white: "#e6ebf5",
+          brightBlack: "#5c6370",
+          brightRed: "#ff8787",
+          brightGreen: "#7ed4a8",
+          brightYellow: "#ffcb6b",
+          brightBlue: "#7eb8ff",
+          brightMagenta: "#e29bf2",
+          brightCyan: "#9bd6e2",
+          brightWhite: "#ffffff",
+        },
+      });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
+      term.open(containerRef.current!);
+      fit.fit();
+
+      let pty: Awaited<ReturnType<AdbClient["startShellPty"]>>;
+      try {
+        pty = await getAdbClient().startShellPty(["sh", "-i"]);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        term.writeln(`\r\n\x1b[31mfailed to start shell: ${msg}\x1b[0m`);
+        setStatus("stopped");
+        return;
+      }
+
+      if (cancelled) {
+        pty.kill();
+        return;
+      }
+
+      // Device → terminal pump. xterm.write() takes a Uint8Array and
+      // handles UTF-8 decoding internally, so we hand it the raw bytes
+      // straight from the stream.
+      const reader = pty.output.getReader();
+      const pump = (async () => {
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            if (value) term.write(value);
+          }
+        } catch {
+          // Stream errored (typically because the device disconnected).
+          // The .finally() below updates the status badge.
+        }
+      })();
+
+      // Terminal → device pump. Reuse one writer across all onData
+      // events (creating a fresh writer per keystroke would add latency).
+      const writer = pty.input.getWriter();
+      const dataDisp = term.onData((data) => {
+        writer.write(new TextEncoder().encode(data)).catch(() => {});
+      });
+
+      // Sync terminal dimensions to the device whenever the panel resizes
+      // (window resize, sidebar collapse, etc.). xterm in `fit.fit()`
+      // re-measures the pixel size and reports new cols/rows.
+      const ro = new ResizeObserver(() => {
+        try {
+          fit.fit();
+          pty.resize(term.rows, term.cols).catch(() => {});
+        } catch {
+          // term disposed mid-resize — safe to ignore.
+        }
+      });
+      ro.observe(containerRef.current!);
+
+      const cleanup = () => {
+        ro.disconnect();
+        dataDisp.dispose();
+        try {
+          pty.kill();
+        } catch {
+          /* already dead */
+        }
+        writer.releaseLock();
+        reader.cancel().catch(() => {});
+        term.dispose();
+      };
+      handle = { term, fit, pty, writer, reader, cleanup };
+      handleRef.current = handle;
+      setStatus("running");
+
+      // If the PTY dies (device unplugged, adb daemon stopped, etc.),
+      // surface that to the user so they know to hit Restart.
+      pump.finally(() => {
+        if (!cancelled) {
+          term.writeln("\r\n\x1b[31m[connection closed]\x1b[0m");
+          setStatus("stopped");
+        }
+      });
     }
-  }
 
-  function onSubmit(e: FormEvent) {
-    e.preventDefault();
-    void run(input);
-  }
+    void setup();
+    return () => {
+      cancelled = true;
+      handle?.cleanup();
+      handleRef.current = null;
+    };
+  }, [serial, remountKey]);
 
   return (
     <section className="panel">
-      <h2>Shell</h2>
-      <p className="panel-desc">
-        Run commands on the device. Uses the &quot;none&quot; protocol — non-interactive,
-        returns when the command finishes.
-      </p>
-      <div ref={outRef} className="shell-output">
-        {history.map((line, i) => (
-          <div key={i}>{line}</div>
-        ))}
-        {busy && <div className="muted">…running…</div>}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: 8,
+        }}
+      >
+        <h2 style={{ margin: 0 }}>Shell</h2>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <StatusBadge status={status} />
+          {status === "stopped" && (
+            <button onClick={() => setRemountKey((k) => k + 1)} className="primary">
+              Restart
+            </button>
+          )}
+        </div>
       </div>
-      <form className="shell-input-row" onSubmit={onSubmit}>
-        <span className="mono muted" style={{ alignSelf: "center" }}>$</span>
-        <input
-          ref={inputRef}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder={busy ? "running…" : "getprop ro.product.model"}
-          disabled={busy}
-          autoComplete="off"
-          spellCheck={false}
-          aria-label="shell command"
-        />
-        <button type="submit" className="primary" disabled={busy || !input.trim()}>
-          Run
-        </button>
-      </form>
+      <p className="panel-desc" style={{ marginBottom: 10 }}>
+        Interactive shell on the device. Ctrl+C, arrow keys, and Tab
+        completion work — anything that needs a real terminal.
+      </p>
+      {/* `key` on the container forces React to fully unmount the div on
+          remount, which in turn re-runs the setup effect and opens a
+          fresh PTY. This is the simplest reliable restart mechanism. */}
+      <div
+        key={remountKey}
+        ref={containerRef}
+        className="xterm-container"
+        style={{
+          height: 480,
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          background: "var(--bg)",
+          overflow: "hidden",
+        }}
+      />
     </section>
   );
 }
 
-/**
- * Naive shell-style tokenizer — splits on whitespace but respects single/double
- * quotes. For the kind of commands users type into WebADB (ls -la /path, etc.)
- * this is enough. If we ever need a real lexer we can swap this out.
- */
-function tokenize(line: string): string[] {
-  const out: string[] = [];
-  let cur = "";
-  let q: "'" | '"' | null = null;
-  for (let i = 0; i < line.length; i++) {
-    const c = line[i];
-    if (q) {
-      if (c === q) {
-        q = null;
-      } else {
-        cur += c;
-      }
-    } else if (c === "'" || c === '"') {
-      q = c;
-    } else if (/\s/.test(c)) {
-      if (cur.length) {
-        out.push(cur);
-        cur = "";
-      }
-    } else {
-      cur += c;
-    }
-  }
-  if (cur.length) out.push(cur);
-  // Escape each argument so ADB receives it correctly when the daemon joins
-  // the command back together server-side.
-  return out.map(escapeArg);
+function StatusBadge({ status }: { status: "starting" | "running" | "stopped" }) {
+  const map = {
+    starting: { color: "var(--warning)", text: "starting" },
+    running: { color: "var(--success)", text: "connected" },
+    stopped: { color: "var(--danger)", text: "disconnected" },
+  } as const;
+  const { color, text } = map[status];
+  return (
+    <span
+      style={{
+        fontSize: 12,
+        color: "var(--text-dim)",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+      }}
+    >
+      <span
+        aria-hidden="true"
+        style={{
+          width: 8,
+          height: 8,
+          borderRadius: "50%",
+          background: color,
+        }}
+      />
+      {text}
+    </span>
+  );
 }

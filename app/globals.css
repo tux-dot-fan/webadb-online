@@ -185,6 +185,28 @@ header.site-header .theme-toggle:hover:not(:disabled) {
   background: var(--bg-elev-2);
 }
 
+/* xterm.js overrides — match our theme tokens so the embedded terminal
+   looks at home in the page. The default xterm colors are slightly off
+   on our light theme (text is too dim) and the foreground/background
+   aren't tied to our color vars, so we re-bind them here. */
+.xterm {
+  padding: 4px 8px;
+}
+.xterm-viewport,
+.xterm-screen {
+  background: var(--bg) !important;
+}
+.xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+.xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+.xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--text-dim);
+}
+
 main.workspace {
   display: grid;
   grid-template-columns: 280px 1fr;

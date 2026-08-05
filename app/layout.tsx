@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
+import "./xterm.css";
 
 const SITE_URL = "https://webadb.online";
 const OG_IMAGE = `${SITE_URL}/og-image.png`;
