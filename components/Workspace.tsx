@@ -2,7 +2,6 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { DevicePanel } from "@/components/DevicePanel";
-import { SettingsPanel } from "@/components/SettingsPanel";
 import {
   useAdbSession,
   useAdbState,
@@ -10,29 +9,13 @@ import {
 } from "@/lib/use-adb";
 import { ThemeToggle } from "@/components/ThemeToggle";
 import {
-  REGISTERED_APPS, getApp, loadEnabled, saveEnabled,
+  REGISTERED_APPS, getApp,
+  loadEnabled, loadOverrides,
+  onPrefsChanged,
   type AppDefinition,
 } from "@/lib/app-registry";
 
-// ── Per-app UI overrides (localStorage) ────────────────────────────────────
-//
-// The registry has static defaults (showInDock / launchOnStartup), but the
-// Settings panel can override them per-user. We persist those overrides
-// under this single key as a record.
-
-const APP_OVERRIDES_KEY = "webadb.apps.overrides";
 interface AppOverrides { showInDock?: boolean; launchOnStartup?: boolean }
-
-function loadAppOverrides(): AppOverrides {
-  try {
-    return JSON.parse(localStorage.getItem(APP_OVERRIDES_KEY) ?? "{}");
-  } catch { return {}; }
-}
-
-function saveAppOverrides(o: AppOverrides): void {
-  try { localStorage.setItem(APP_OVERRIDES_KEY, JSON.stringify(o)); }
-  catch { /* ignore */ }
-}
 
 // ── Window state ─────────────────────────────────────────────────────────────
 
@@ -78,21 +61,45 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
   const supported = useAdbSupported();
 
   // ── Enabled apps + per-app overrides (Settings → localStorage) ─────────
+  // Workspace keeps a reactive copy of these settings so it can:
+  //   • filter the Dock
+  //   • close windows of apps that just got disabled
+  //   • re-seed launchOnStartup windows
+  // Writes happen in SettingsApp; this view re-reads via onPrefsChanged().
   const [enabledApps, setEnabledApps] = useState<Set<string>>(() =>
     typeof window === "undefined"
       ? new Set(REGISTERED_APPS.map((a) => a.id))
       : loadEnabled(REGISTERED_APPS)
   );
-  useEffect(() => {
-    saveEnabled(enabledApps);
-  }, [enabledApps]);
-
   const [appOverrides, setAppOverrides] = useState<AppOverrides>(() =>
-    typeof window === "undefined" ? {} : loadAppOverrides()
+    typeof window === "undefined" ? {} : loadOverrides()
   );
+
   useEffect(() => {
-    saveAppOverrides(appOverrides);
-  }, [appOverrides]);
+    return onPrefsChanged(() => {
+      const next = loadEnabled(REGISTERED_APPS);
+      setEnabledApps((prev) => {
+        // Close any windows of apps that just got disabled.
+        const newlyDisabled = [...prev].filter((id) => !next.has(id));
+        if (newlyDisabled.length > 0) {
+          setWindows((wins) => {
+            const m = new Map(wins);
+            for (const [wid, w] of m) {
+              if (newlyDisabled.includes(w.appId)) m.delete(wid);
+            }
+            return m;
+          });
+          setActiveApps((active) => {
+            const s = new Set(active);
+            for (const id of newlyDisabled) s.delete(id);
+            return s;
+          });
+        }
+        return next;
+      });
+      setAppOverrides(loadOverrides());
+    });
+  }, []);
 
   /** Effective showInDock: registry default overridden by user setting. */
   function isInDock(app: AppDefinition): boolean {
@@ -361,38 +368,33 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
     }
   }, [openWindow]);
 
-  // ── Settings toggles ─────────────────────────────────────────────────────
+  // ── Keyboard shortcuts ───────────────────────────────────────────────────
+  //
+  // Cmd+K / Ctrl+K → open the Search app (Dash). Re-focuses if already open
+  // since Dash is `allowMultipleWindows: false`.
 
-  const toggleEnabled = useCallback((id: string, en: boolean) => {
-    setEnabledApps((prev) => {
-      const next = new Set(prev);
-      if (en) next.add(id); else next.delete(id);
-      return next;
-    });
-    // If disabling, close any open windows of this app
-    if (!en) {
-      setWindows((prev) => {
-        const next = new Map(prev);
-        for (const [wid, w] of next) {
-          if (w.appId === id) next.delete(wid);
-        }
-        return next;
-      });
-      setActiveApps((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
-    }
-  }, []);
-
-  const toggleShowInDock = useCallback((id: string, val: boolean) => {
-    setAppOverrides((o) => ({ ...o, showInDock: val }));
-  }, []);
-
-  const toggleLaunchOnStartup = useCallback((id: string, val: boolean) => {
-    setAppOverrides((o) => ({ ...o, launchOnStartup: val }));
-  }, []);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // Ignore when typing in an input/textarea/contenteditable — otherwise
+      // every keystroke in the terminal or file input would summon Dash.
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const tag = target.tagName;
+        if (
+          tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+          target.isContentEditable
+        ) return;
+      }
+      // Cmd+K on macOS, Ctrl+K elsewhere.
+      const isMod = e.metaKey || e.ctrlKey;
+      if (isMod && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        openWindow("dash");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [openWindow]);
 
   // ── Derived state for render ─────────────────────────────────────────────
 
@@ -433,14 +435,31 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
           <div className="sidebar-section">
             <p className="sidebar-label">Device</p>
             <DevicePanel state={state} session={session} supported={supported} />
-            <p className="sidebar-label" style={{ marginTop: 12 }}>Settings</p>
-            <SettingsPanel
-              session={session!}
-              enabled={enabledApps}
-              onToggle={toggleEnabled}
-              onToggleDock={toggleShowInDock}
-              onToggleStartup={toggleLaunchOnStartup}
-            />
+            <p className="sidebar-label" style={{ marginTop: 12 }}>Quick links</p>
+            <button
+              type="button"
+              className="sidebar-link"
+              onClick={() => openWindow("launcher")}
+              title="Open the Apps launcher"
+            >
+              <span aria-hidden>🚀</span> Apps
+            </button>
+            <button
+              type="button"
+              className="sidebar-link"
+              onClick={() => openWindow("dash")}
+              title="Open search (⌘K)"
+            >
+              <span aria-hidden>🔎</span> Search <kbd>⌘K</kbd>
+            </button>
+            <button
+              type="button"
+              className="sidebar-link"
+              onClick={() => openWindow("settings")}
+              title="Open app settings"
+            >
+              <span aria-hidden>⚙</span> Settings
+            </button>
           </div>
         )}
         <div className="sidebar-footer">
@@ -520,6 +539,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
                 }}
                 shellInitialCmd={shellInitialCmd}
                 onShellOpen={openShellWindow}
+                onLaunchApp={openWindow}
               />
             );
           })}
@@ -581,16 +601,24 @@ interface DesktopWindowProps {
   session: ReturnType<typeof useAdbSession>;
   shellInitialCmd?: string | null;
   onShellOpen?: (cwd?: string, command?: string) => void;
+  onLaunchApp?: (appId: string) => void;
 }
 
 function DesktopWindow({
   win, def, Panel, focused, dragging, resizing,
   onFocus, onClose, onMinimize, onMaximize,
   onTitlebarMouseDown, onResizeMouseDown, session,
-  shellInitialCmd, onShellOpen,
+  shellInitialCmd, onShellOpen, onLaunchApp,
 }: DesktopWindowProps) {
-  if (!session) return null;
+  // Apps that don't need an ADB session (Launcher / Dash / Settings) render
+  // even before a device is connected. Everything else gates on session.
+  if (def.requiresSession !== false && !session) return null;
   if (win.minimized) return null;
+
+  // From here on, every panel receives `session` in its prop types — even
+  // apps that don't need ADB. For those we pass a sentinel object; the
+  // panel must ignore it (Launcher / Dash / Settings do).
+  const safeSession: ReturnType<typeof useAdbSession> = session ?? ({} as ReturnType<typeof useAdbSession>);
 
   const isMaximized = win.maximized;
 
@@ -653,8 +681,9 @@ function DesktopWindow({
 
       <div className="window-content">
         <Panel
-          session={session}
+          session={safeSession as never}
           onOpenShell={onShellOpen ? (cwd) => onShellOpen(cwd) : undefined}
+          onLaunchApp={onLaunchApp}
         />
       </div>
 

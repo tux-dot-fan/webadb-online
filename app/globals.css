@@ -1395,3 +1395,311 @@ section.panel .panel-desc {
     height: calc(100vh - 56px) !important;
   }
 }
+
+/* ── Sidebar quick links ───────────────────────────────────────────────── */
+
+.sidebar-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  margin-top: 4px;
+  background: transparent;
+  color: var(--fg);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+.sidebar-link:hover {
+  background: var(--bg-elev-2);
+  border-color: var(--border);
+}
+.sidebar-link kbd {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 0.72em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--fg-muted);
+}
+
+/* ── SettingsApp ───────────────────────────────────────────────────────── */
+
+.settings-app {
+  padding: 18px 22px;
+  font-size: 0.92em;
+  color: var(--fg);
+}
+.settings-header h2 {
+  margin: 0 0 4px;
+  font-size: 1.05em;
+}
+.settings-hint {
+  margin: 0 0 14px;
+  color: var(--fg-muted);
+  font-size: 0.86em;
+}
+.settings-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.settings-row {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  transition: opacity 0.15s ease;
+}
+.settings-row.is-disabled {
+  opacity: 0.55;
+}
+.settings-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.settings-row-icon {
+  font-size: 1.4em;
+  width: 1.6em;
+  text-align: center;
+}
+.settings-row-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.settings-row-text strong {
+  font-weight: 600;
+}
+.settings-row-desc {
+  color: var(--fg-muted);
+  font-size: 0.84em;
+  margin-top: 1px;
+}
+.settings-row-overrides {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.86em;
+  color: var(--fg-muted);
+}
+.settings-row-overrides .checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.settings-row-note {
+  margin-left: auto;
+  font-style: italic;
+  opacity: 0.7;
+}
+.toggle {
+  --knob-size: 18px;
+  --track-w: 36px;
+  --track-h: 20px;
+  position: relative;
+  width: var(--track-w);
+  height: var(--track-h);
+  background: var(--border);
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  padding: 0;
+  transition: background-color 0.18s ease;
+  flex: 0 0 auto;
+}
+.toggle[aria-checked="true"] {
+  background: var(--accent, #3b82f6);
+}
+.toggle-knob {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: var(--knob-size);
+  height: var(--knob-size);
+  background: var(--bg, #fff);
+  border-radius: 50%;
+  transition: transform 0.18s cubic-bezier(0.4, 0.0, 0.2, 1);
+}
+.toggle[aria-checked="true"] .toggle-knob {
+  transform: translateX(calc(var(--track-w) - var(--knob-size) - 2px));
+}
+
+/* ── LauncherApp (Launchpad) ────────────────────────────────────────────── */
+
+.launcher-app {
+  padding: 22px;
+  color: var(--fg);
+}
+.launcher-header h2 {
+  margin: 0 0 2px;
+  font-size: 1.1em;
+}
+.launcher-hint {
+  margin: 0 0 18px;
+  color: var(--fg-muted);
+  font-size: 0.85em;
+}
+.launcher-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 16px;
+}
+.launcher-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+  transition: transform 0.12s ease, background-color 0.12s ease,
+              border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.launcher-tile:hover {
+  transform: translateY(-2px);
+  background: var(--bg-elev-2);
+  border-color: var(--accent, #3b82f6);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+}
+.launcher-tile-icon {
+  font-size: 2.4em;
+  line-height: 1;
+}
+.launcher-tile-title {
+  font-size: 0.84em;
+  text-align: center;
+}
+
+/* ── DashApp (Spotlight) ───────────────────────────────────────────────── */
+
+.dash-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  color: var(--fg);
+}
+.dash-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 14px 18px 12px;
+}
+.dash-input-icon {
+  position: absolute;
+  left: 22px;
+  font-size: 1em;
+  pointer-events: none;
+  opacity: 0.7;
+}
+.dash-input {
+  width: 100%;
+  padding: 10px 12px 10px 36px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  color: var(--fg);
+  outline: none;
+}
+.dash-input:focus {
+  border-color: var(--accent, #3b82f6);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent, #3b82f6) 22%, transparent);
+}
+.dash-results {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 6px 10px;
+}
+.dash-empty {
+  padding: 22px 12px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 0.88em;
+}
+.dash-result {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 10px;
+  margin: 1px 0;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  text-align: left;
+  font: inherit;
+  color: var(--fg);
+  cursor: pointer;
+}
+.dash-result.is-active {
+  background: var(--bg-elev-2);
+}
+.dash-result-icon {
+  font-size: 1.4em;
+  width: 1.5em;
+  text-align: center;
+}
+.dash-result-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.dash-result-text strong {
+  font-weight: 500;
+}
+.dash-result-desc {
+  color: var(--fg-muted);
+  font-size: 0.84em;
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dash-result-kind {
+  font-size: 0.74em;
+  color: var(--fg-muted);
+  padding: 1px 7px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+}
+.dash-footer {
+  border-top: 1px solid var(--border);
+  padding: 7px 14px;
+  font-size: 0.78em;
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.dash-footer kbd {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+}

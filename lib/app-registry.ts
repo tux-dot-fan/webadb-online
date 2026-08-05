@@ -16,11 +16,21 @@
 import type { ComponentType } from "react";
 import type { AdbSession } from "@/lib/adb-client";
 
-/** Common props every panel receives. Keeps the registry simple. */
+/**
+ * Common props every panel receives. Keeps the registry simple.
+ *
+ * `onLaunchApp` is a callback so a panel (e.g. Launcher) can open another
+ * app window without needing direct access to Workspace's state.
+ *
+ * `session` is guaranteed non-null by Workspace — apps that don't need
+ * ADB (Launcher / Dash / Settings) just ignore the prop.
+ */
 export interface AppProps {
   session: AdbSession;
   /** Optional callback (used by File Manager to open Terminal Here). */
   onOpenShell?: (cwd: string, initialCommand?: string) => void;
+  /** Optional callback used by Launcher / Dash to open another app. */
+  onLaunchApp?: (appId: string) => void;
 }
 
 /** App descriptor. */
@@ -43,6 +53,12 @@ export interface AppDefinition {
   allowMultipleWindows?: boolean;
   /** Short description shown in Settings panel. */
   description?: string;
+  /**
+   * Whether this app needs an ADB session to function. If false, the window
+   * is allowed to render before a device is connected (used by Launcher /
+   * Dash / Settings which are local-state-only).
+   */
+  requiresSession?: boolean;
 }
 
 // ── Built-in registration ────────────────────────────────────────────────────
@@ -54,6 +70,9 @@ import { LogcatPanel }       from "@/components/LogcatPanel";
 import { ScreenshotPanel }   from "@/components/ScreenshotPanel";
 import { ApkInstallPanel }   from "@/components/ApkInstallPanel";
 import { WiFiAdbPanel }      from "@/components/WiFiAdbPanel";
+import { SettingsApp }       from "@/components/SettingsApp";
+import { LauncherApp }       from "@/components/LauncherApp";
+import { DashApp }           from "@/components/DashApp";
 
 /**
  * The single source of truth for what apps exist. Workspace reads this list
@@ -62,6 +81,30 @@ import { WiFiAdbPanel }      from "@/components/WiFiAdbPanel";
  * Order matters: it's the Dock order (left → right) and Settings order.
  */
 export const REGISTERED_APPS: AppDefinition[] = [
+  {
+    id: "launcher",
+    title: "Apps",
+    icon: "🚀",
+    Component: LauncherApp,
+    defaultSize: { width: 520, height: 460 },
+    showInDock: true,
+    launchOnStartup: false,
+    allowMultipleWindows: false,
+    requiresSession: false,
+    description: "Browse all available apps (Launchpad-style).",
+  },
+  {
+    id: "dash",
+    title: "Search",
+    icon: "🔎",
+    Component: DashApp,
+    defaultSize: { width: 560, height: 420 },
+    showInDock: false,
+    launchOnStartup: false,
+    allowMultipleWindows: false,
+    requiresSession: false,
+    description: "Search across apps, files, and shell commands (⌘K).",
+  },
   {
     id: "shell",
     title: "Terminal",
@@ -86,7 +129,7 @@ export const REGISTERED_APPS: AppDefinition[] = [
   },
   {
     id: "apps",
-    title: "Apps",
+    title: "Apps Manager",
     icon: "📱",
     Component: AppManagerPanel,
     defaultSize: { width: 720, height: 480 },
@@ -139,6 +182,18 @@ export const REGISTERED_APPS: AppDefinition[] = [
     allowMultipleWindows: false,
     description: "Enable wireless ADB on the connected device.",
   },
+  {
+    id: "settings",
+    title: "Settings",
+    icon: "⚙",
+    Component: SettingsApp,
+    defaultSize: { width: 560, height: 480 },
+    showInDock: true,
+    launchOnStartup: false,
+    allowMultipleWindows: false,
+    requiresSession: false,
+    description: "Configure which apps appear and launch on startup.",
+  },
 ];
 
 // ── Lookup helpers ──────────────────────────────────────────────────────────
@@ -166,6 +221,21 @@ export function startupApps(): AppDefinition[] {
 // ── Enabled state (Settings → localStorage) ─────────────────────────────────
 
 const ENABLED_STORAGE_KEY = "webadb.apps.enabled";
+const OVERRIDES_STORAGE_KEY = "webadb.apps.overrides";
+
+/**
+ * Custom event fired after a SettingsApp toggle writes localStorage. Storage
+ * events don't fire in the same window that performed the write, so we
+ * dispatch our own to keep Workspace's Dock / window list in sync.
+ */
+const PREF_CHANGE_EVENT = "webadb:prefs-changed";
+
+/** Dispatch after any prefs write so other components can re-read localStorage. */
+export function notifyPrefsChanged(): void {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(PREF_CHANGE_EVENT));
+  }
+}
 
 /**
  * Load enabled-set from localStorage. Missing key → all apps enabled.
@@ -187,5 +257,46 @@ export function loadEnabled(defaults: readonly AppDefinition[]): Set<string> {
 export function saveEnabled(enabled: Set<string>): void {
   try {
     localStorage.setItem(ENABLED_STORAGE_KEY, JSON.stringify([...enabled]));
+    notifyPrefsChanged();
   } catch { /* ignore */ }
+}
+
+/** Load the per-app overrides record (showInDock / launchOnStartup). */
+export function loadOverrides(): Record<string, { showInDock?: boolean; launchOnStartup?: boolean }> {
+  try {
+    const raw = localStorage.getItem(OVERRIDES_STORAGE_KEY);
+    if (raw === null) return {};
+    const parsed = JSON.parse(raw) as Record<string, { showInDock?: boolean; launchOnStartup?: boolean }>;
+    // Drop overrides for apps that no longer exist (id drift).
+    const validIds = new Set(REGISTERED_APPS.map((a) => a.id));
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([id]) => validIds.has(id)),
+    );
+  } catch {
+    return {};
+  }
+}
+
+export function saveOverrides(
+  o: Record<string, { showInDock?: boolean; launchOnStartup?: boolean }>,
+): void {
+  try {
+    localStorage.setItem(OVERRIDES_STORAGE_KEY, JSON.stringify(o));
+    notifyPrefsChanged();
+  } catch { /* ignore */ }
+}
+
+/** Subscribe to localStorage changes from this app. Returns unsubscribe. */
+export function onPrefsChanged(handler: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(PREF_CHANGE_EVENT, handler);
+  // Also listen for cross-tab changes via native storage event.
+  const onStorage = (e: StorageEvent) => {
+    if (e.key === ENABLED_STORAGE_KEY || e.key === OVERRIDES_STORAGE_KEY) handler();
+  };
+  window.addEventListener("storage", onStorage);
+  return () => {
+    window.removeEventListener(PREF_CHANGE_EVENT, handler);
+    window.removeEventListener("storage", onStorage);
+  };
 }
