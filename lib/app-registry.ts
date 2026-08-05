@@ -134,7 +134,7 @@ export const REGISTERED_APPS: AppDefinition[] = [
     Component: ShellPanel,
     defaultSize: { width: 820, height: 460 },
     showInDock: true,
-    launchOnStartup: true,
+    launchOnStartup: false,
     allowMultipleWindows: true,
     description: "Interactive shell with PTY (arrow keys, Ctrl+C, resize).",
   },

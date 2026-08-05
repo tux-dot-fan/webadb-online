@@ -550,16 +550,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
       {/* ── Desktop area ────────────────────────────────────────────── */}
       <div className="desktop-area">
         {windows.size === 0 && (
-          <div className="hero">
-            <div className="hero-icon">🧊</div>
-            <h1 className="hero-title">WebADB</h1>
-            <p className="hero-desc">
-              Connect an Android device via USB and manage it directly from your browser.
-            </p>
-            <p className="hero-hint">
-              Pick an app from the Dock below ↓
-            </p>
-          </div>
+          <LandingHero />
         )}
 
         <div className="windows-layer">
@@ -1008,5 +999,83 @@ function SettingsOverlay({ onClose }: SettingsOverlayProps) {
         <SettingsApp />
       </div>
     </div>
+  );
+}
+
+// ── Landing hero (empty desktop) ──────────────────────────────────────────
+//
+// Rendered when no windows are open. This is the first thing users see when
+// they land on the site — it's also the page's primary SEO-visible content
+// (the surrounding text in app/layout.tsx reinforces this for crawlers but
+// the on-page markup is what humans actually see).
+//
+// Features are pulled straight from REGISTERED_APPS so the list stays in
+// sync automatically: add an app to the registry with a `description` and
+// it shows up here. We exclude overlay apps (Apps / Search / Settings)
+// because they're UI chrome, not user-facing features.
+
+function LandingHero() {
+  const features = REGISTERED_APPS.filter((a) => a.isOverlay !== true);
+
+  return (
+    <section className="landing">
+      <header className="landing-hero">
+        <div className="landing-icon">🧊</div>
+        <h1 className="landing-title">WebADB</h1>
+        <p className="landing-tagline">
+          Run ADB on your Android device entirely from your browser.
+          No install, no drivers, no platform-specific tooling.
+        </p>
+        <p className="landing-sub">
+          Open a real PTY shell, push and install APKs, browse and edit files
+          on the device, stream logcat, take screenshots, manage installed
+          apps, and switch to wireless ADB — all from a single tab in
+          Chrome, Edge, or Opera.
+        </p>
+      </header>
+
+      <h2 className="landing-section-title">What you can do</h2>
+      <ul className="landing-features" aria-label="Features">
+        {features.map((app) => (
+          <li key={app.id} className="landing-feature">
+            <div className="landing-feature-icon" aria-hidden="true">
+              {app.icon}
+            </div>
+            <div className="landing-feature-body">
+              <h3 className="landing-feature-name">{app.title}</h3>
+              <p className="landing-feature-desc">{app.description}</p>
+            </div>
+          </li>
+        ))}
+      </ul>
+
+      <h2 className="landing-section-title">How to connect</h2>
+      <ol className="landing-steps">
+        <li>
+          <strong>Enable USB debugging</strong> on your Android phone
+          (<em>Settings → Developer options → USB debugging</em>).
+        </li>
+        <li>
+          <strong>Plug into USB</strong> and pick the &ldquo;File
+          transfer / MTP&rdquo; mode on the phone prompt.
+        </li>
+        <li>
+          In the sidebar, click <strong>Connect device</strong>, pick your
+          phone in the browser dialog, then tap <strong>Allow</strong> on
+          the phone&rsquo;s RSA fingerprint prompt.
+        </li>
+        <li>
+          Pick an app from the <strong>Dock</strong> below
+          (<span aria-hidden="true">🧊</span>) — most work with the device
+          already plugged in.
+        </li>
+      </ol>
+
+      <p className="landing-foot">
+        WebADB is open source and runs entirely client-side. Your USB
+        traffic never leaves the browser; nothing is uploaded to any
+        server.
+      </p>
+    </section>
   );
 }

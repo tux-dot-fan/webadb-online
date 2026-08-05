@@ -1393,6 +1393,154 @@ section.panel .panel-desc {
   opacity: 0.7;
 }
 
+/* ── Landing page (no windows open) ─────────────────────────────────────── */
+
+/* The empty-desktop hero replaces the legacy 4-line `.hero` block. It's a
+   full marketing/SEO surface, so we lay it out as a top-to-bottom flow:
+   header → feature grid → connect steps → footer. The grid is the
+   centerpiece because it's driven by REGISTERED_APPS — adding a new app
+   in lib/app-registry.ts automatically surfaces it here. */
+.landing {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 56px 24px 96px;
+  color: var(--fg);
+}
+.landing-hero {
+  text-align: center;
+  margin-bottom: 48px;
+}
+.landing-icon {
+  font-size: 64px;
+  margin-bottom: 12px;
+  filter: drop-shadow(0 4px 16px color-mix(in srgb, var(--accent) 30%, transparent));
+}
+.landing-title {
+  font-size: clamp(36px, 5.5vw, 56px);
+  margin: 0 0 12px;
+  background: linear-gradient(135deg, var(--text-dim) 25%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: -0.02em;
+}
+.landing-tagline {
+  font-size: 19px;
+  margin: 0 auto 14px;
+  max-width: 640px;
+  color: var(--fg);
+  font-weight: 500;
+}
+.landing-sub {
+  font-size: 15px;
+  margin: 0 auto;
+  max-width: 640px;
+  color: var(--text-dim);
+  line-height: 1.6;
+}
+.landing-section-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--text-dim);
+  margin: 0 0 16px;
+  font-weight: 600;
+}
+/* Feature grid — driven by REGISTERED_APPS, so the count varies as we
+   add apps. auto-fit minmax keeps it responsive: 2–3 columns wide on
+   desktop, 1 column on phones. `1fr` (not auto) for the gap track
+   keeps the columns equal-width even if one card has a longer title. */
+.landing-features {
+  list-style: none;
+  margin: 0 0 56px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+}
+.landing-feature {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  /* Slight lift on hover for affordance. No JS, no focus trap — it's a
+     static info card, not a link. */
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+.landing-feature:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.landing-feature-icon {
+  font-size: 24px;
+  line-height: 1;
+  flex-shrink: 0;
+  /* Align emoji baseline with the title baseline so the icon doesn't
+     float above the text. */
+  margin-top: 2px;
+}
+.landing-feature-body {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.landing-feature-name {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.landing-feature-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.45;
+}
+.landing-steps {
+  margin: 0 0 48px;
+  padding: 0 0 0 24px;
+  /* Each step is a row; the marker keeps numbering even if a list item
+     is long enough to wrap. */
+  counter-reset: step;
+  list-style: decimal;
+}
+.landing-steps li {
+  font-size: 15px;
+  line-height: 1.55;
+  margin: 0 0 10px;
+  color: var(--fg);
+}
+.landing-steps li strong {
+  color: var(--fg);
+}
+.landing-steps li em {
+  font-style: normal;
+  /* Treat path-like text as monospace so "Settings → Developer options
+     → USB debugging" reads like a UI path, not prose. */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+.landing-foot {
+  margin: 0;
+  padding: 16px 20px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+
+@media (max-width: 700px) {
+  .landing { padding: 32px 16px 64px; }
+  .landing-features { grid-template-columns: 1fr; }
+}
+
 .feature-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
