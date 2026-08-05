@@ -591,6 +591,139 @@ export class AdbClient {
     };
   }
 
+  // ─── Device file ops used by the Terminal sidebar ──────────────────────
+  //
+  // We push user-uploaded scripts/binaries to `/data/local/tmp/webadb/`
+  // because:
+  //   - `/data/local/tmp/` is writable by the adb shell user without root
+  //   - it's a real ext4 mount, so `chmod +x` bits stick (they wouldn't
+  //     on /sdcard, which is emulated F2FS/FAT)
+  //   - the tmp dir is auto-cleared on reboot, which is desirable for
+  //     ephemeral tooling
+
+  /**
+   * Push raw bytes to a device path via the sync service. Throws if the
+   * device rejects the write (e.g. read-only mount, permission denied,
+   * no space left). Returns the bytes written so callers can sanity-check.
+   */
+  async pushBytes(remotePath: string, data: Uint8Array): Promise<number> {
+    const s = this.requireSession();
+    // sync.write takes a ReadableStream<MaybeConsumable<Uint8Array>>; the
+    // standard ReadableStream<Uint8Array> we build is structurally
+    // compatible at runtime but TypeScript can't unify the generic param
+    // because MaybeConsumable adds a Symbol.asyncIterator override.
+    // The same cast pattern is used by TextEditorApp and FileManagerPanel.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(data);
+        controller.close();
+      },
+    });
+    await s.adb.sync.write({
+      filename: remotePath,
+      file: stream as unknown as Parameters<typeof s.adb.sync.write>[0]["file"],
+    });
+    return data.byteLength;
+  }
+
+  /**
+   * Read raw bytes from a device path. Throws if the file doesn't exist
+   * or the caller lacks read permission. Used for "Download" actions in
+   * the sidebar — pulls the on-device copy back to the browser as a Blob.
+   *
+   * Note: sync.read is a streaming API that may yield multiple chunks
+   * for files larger than the chunk size. We concatenate them all into
+   * one Uint8Array so callers can treat the result as a single buffer.
+   */
+  async pullBytes(remotePath: string): Promise<Uint8Array> {
+    const s = this.requireSession();
+    // sync.read is typed as the stream-extra ReadableStream, but at
+    // runtime it's the standard WHATWG ReadableStream<Uint8Array>, which
+    // is what `getReader()` + `read()` return. We cast through `unknown`
+    // to bridge the two declarations without paying for a manual copy.
+    const stream = s.adb.sync.read(remotePath) as unknown as ReadableStream<Uint8Array>;
+    const reader = stream.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+        total += value.byteLength;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    if (total === 0) throw new Error(`Empty file: ${remotePath}`);
+    const out = new Uint8Array(total);
+    let off = 0;
+    for (const c of chunks) {
+      out.set(c, off);
+      off += c.byteLength;
+    }
+    return out;
+  }
+
+  /**
+   * `rm -f` a path. Non-zero exit is swallowed (matches -f semantics) so
+   * callers don't have to wrap try/catch for cleanup paths.
+   */
+  async shellRm(remotePath: string): Promise<void> {
+    const s = this.requireSession();
+    try {
+      await spawnText(s.adb, ["rm", "-f", remotePath]);
+    } catch {
+      // rm -f exits non-zero if the file doesn't exist; that's fine.
+    }
+  }
+
+  /**
+   * `chmod <mode> <path>`. We only ever use this to set +x after upload.
+   */
+  async shellChmod(remotePath: string, mode: string): Promise<void> {
+    const s = this.requireSession();
+    await spawnText(s.adb, ["chmod", mode, remotePath]);
+  }
+
+  /**
+   * `test -e <path>` — returns true if the path exists, false otherwise.
+   * We use this to verify a script/binary is still on the device after a
+   * reconnect (the tmp dir survives USB reconnects — only a reboot
+   * clears it).
+   */
+  async shellExists(remotePath: string): Promise<boolean> {
+    const s = this.requireSession();
+    try {
+      const quoted = `'${remotePath.replace(/'/g, "'\\''")}'`;
+      const out = await spawnText(s.adb, [
+        "sh",
+        "-c",
+        `test -e ${quoted} && echo y || echo n`,
+      ]);
+      return out.trim() === "y";
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Ensure a directory exists (`mkdir -p`). Needed before the first push
+   * because `/data/local/tmp/webadb/{scripts,bin}/` won't exist on a
+   * fresh device.
+   */
+  async shellMkdirP(remotePath: string): Promise<void> {
+    const s = this.requireSession();
+    try {
+      await spawnText(s.adb, ["mkdir", "-p", remotePath]);
+    } catch {
+      // mkdir -p is idempotent; only EACCES or ENOSPC matter and those
+      // surface from spawnText itself. Swallowing here would mask real
+      // failures, so we let exceptions propagate.
+      throw new Error(`mkdir -p ${remotePath} failed`);
+    }
+  }
+
   private requireSession(): AdbSession {
     if (!this.session) {
       throw new Error("Not connected to a device");

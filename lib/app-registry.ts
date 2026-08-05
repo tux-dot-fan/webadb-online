@@ -132,7 +132,7 @@ export const REGISTERED_APPS: AppDefinition[] = [
     title: "Terminal",
     icon: "🐚",
     Component: ShellPanel,
-    defaultSize: { width: 640, height: 420 },
+    defaultSize: { width: 820, height: 460 },
     showInDock: true,
     launchOnStartup: true,
     allowMultipleWindows: true,

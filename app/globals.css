@@ -96,6 +96,23 @@ button.primary:hover:not(:disabled) {
   background: var(--accent-strong);
   border-color: var(--accent-strong);
 }
+/* Subdued, outline-only button used by sidebars and tool palettes. */
+button.ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+button.ghost:hover:not(:disabled) {
+  background: var(--bg-elev-2);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+/* Compact button (icon glyphs, inline list actions). */
+button.small {
+  padding: 4px 8px;
+  font-size: 0.82em;
+  border-radius: 5px;
+}
 
 input,
 textarea,
@@ -1586,6 +1603,390 @@ section.panel .panel-desc {
 }
 .toggle[aria-checked="true"] .toggle-knob {
   transform: translateX(calc(var(--track-w) - var(--knob-size) - 2px));
+}
+
+/* ── ShellPanel — interactive PTY + 3-tab sidebar ──────────────────────── */
+/*
+ * Layout: head row (status + sidebar toggle) on top, body fills the rest
+ * as a horizontal flex (sidebar | xterm). The body collapses to a single
+ * xterm column when the user hides the sidebar.
+ *
+ * The .panel-fill rule on the xterm container makes it stretch to fill
+ * the panel (so the terminal grows with the window) — same pattern used
+ * by every other panel in this app. See `.window-content > section.panel`
+ * in the parent CSS for the upstream flex plumbing.
+ */
+
+/* ── Panel shell ───────────────────────────────────────────────────────── */
+.shell-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  gap: 8px;
+  padding: 10px 12px;
+  color: var(--text);
+}
+.shell-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.shell-panel-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88em;
+  color: var(--text-dim);
+}
+/* The sidebar toggle lives on the right of the head row. */
+.shell-sidebar-toggle {
+  padding: 4px 10px;
+  font-size: 0.82em;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.shell-sidebar-toggle:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ── Body: sidebar + xterm ─────────────────────────────────────────────── */
+.shell-panel-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 10px;
+}
+.shell-panel-body.sidebar-closed {
+  grid-template-columns: 0 1fr;
+  gap: 0;
+}
+/* When closed, hide the sidebar entirely so the collapse is instant
+   (no leftover widget grabbing scroll events or stealing focus). */
+.shell-panel-body.sidebar-closed .shell-sidebar {
+  display: none;
+}
+
+/* ── Sidebar container + tabs ─────────────────────────────────────────── */
+.shell-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+.shell-sidebar-tabs {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elev-2);
+}
+.shell-sidebar-tab {
+  flex: 1;
+  padding: 8px 6px;
+  font-size: 0.82em;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  border-radius: 0;
+  transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
+}
+.shell-sidebar-tab:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--bg-elev);
+}
+.shell-sidebar-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--bg-elev);
+}
+.shell-sidebar-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 10px 12px;
+}
+.shell-sidebar-hint {
+  margin: 0 0 8px;
+  font-size: 0.78em;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+/* ── Commands tab ──────────────────────────────────────────────────────── */
+.shell-cmds {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.shell-cmd-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.shell-cmd-item {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.shell-cmd-run {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 7px 9px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  color: var(--text);
+}
+.shell-cmd-run:hover {
+  background: var(--bg-elev-2);
+}
+.shell-cmd-label {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text);
+}
+.shell-cmd-cmd {
+  display: block;
+  width: 100%;
+  font-size: 0.74em;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  padding: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shell-cmd-del {
+  flex-shrink: 0;
+  padding: 0 9px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 0.95em;
+  border-radius: 0;
+}
+.shell-cmd-del:hover {
+  background: var(--danger);
+  color: var(--on-accent);
+  border-color: var(--danger);
+}
+.shell-cmd-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.shell-cmd-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.shell-cmd-add input,
+.shell-cmd-add textarea {
+  width: 100%;
+  font-size: 0.84em;
+}
+
+/* ── Files tab (Scripts / Binaries) ───────────────────────────────────── */
+.shell-files {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.shell-files-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.shell-files-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.72em;
+  color: var(--text-dim);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 3px 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shell-files-actions {
+  display: flex;
+  gap: 6px;
+}
+.shell-files-status {
+  font-size: 0.78em;
+  color: var(--text-dim);
+  padding: 4px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.shell-files-error {
+  font-size: 0.8em;
+  color: var(--on-accent);
+  background: var(--danger);
+  border-radius: 5px;
+  padding: 6px 8px;
+}
+.shell-files-empty {
+  font-size: 0.82em;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 18px 6px;
+  border: 1px dashed var(--border);
+  border-radius: 6px;
+}
+.shell-files-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.shell-file-item {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.shell-file-main {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 9px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+  color: var(--text);
+}
+.shell-file-main:hover {
+  background: var(--bg-elev-2);
+}
+.shell-file-icon {
+  font-size: 1.1em;
+  flex-shrink: 0;
+}
+.shell-file-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.shell-file-name {
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.shell-file-sub {
+  font-size: 0.72em;
+  color: var(--text-dim);
+}
+.shell-file-run {
+  flex-shrink: 0;
+  padding: 0 10px;
+  background: transparent;
+  border: none;
+  border-left: 1px solid var(--border);
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 1em;
+  border-radius: 0;
+}
+.shell-file-run:hover {
+  background: var(--accent);
+  color: var(--on-accent);
+  border-color: var(--accent);
+}
+
+/* ── Context menu (right-click on a file row) ─────────────────────────── */
+/* Floating, fixed-position popup. Anchored by inline `left`/`top` set
+   from `MouseEvent.clientX/Y` so it pops up where the user clicked. */
+.shell-file-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 160px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.32);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.shell-file-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 0.85em;
+  text-align: left;
+  cursor: pointer;
+}
+.shell-file-menu-item:hover:not(:disabled) {
+  background: var(--bg-elev-2);
+  color: var(--accent);
+}
+.shell-file-menu-item.danger:hover:not(:disabled) {
+  background: var(--danger);
+  color: var(--on-accent);
+}
+
+/* ── Responsive: below 480px the sidebar feels cramped, so narrow it ── */
+@media (max-width: 480px) {
+  .shell-panel-body {
+    grid-template-columns: 200px 1fr;
+  }
 }
 
 /* ── LauncherApp (Launchpad) ────────────────────────────────────────────── */

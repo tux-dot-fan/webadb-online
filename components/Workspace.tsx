@@ -11,6 +11,8 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { LauncherApp } from "@/components/LauncherApp";
 import { DashApp } from "@/components/DashApp";
 import { SettingsApp } from "@/components/SettingsApp";
+import { ShellPanel, type ShellPanelHandle } from "@/components/ShellPanel";
+import type { AdbSession } from "@/lib/adb-client";
 import {
   REGISTERED_APPS, getApp,
   loadEnabled, loadOverrides,
@@ -427,6 +429,11 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
 
   const [shellInitialCmd, setShellInitialCmd] = useState<string | null>(null);
 
+  // Refs to live ShellPanel instances, keyed by window id. Used so
+  // `openShellWindow` (below) can call `runCommand` after the new
+  // window mounts and the PTY has actually started.
+  const shellHandlesRef = useRef<Map<WindowId, ShellPanelHandle>>(new Map());
+
   const openShellWindow = useCallback((cwd?: string, command?: string) => {
     if (cwd) {
       const cmd = command ? `cd "${cwd}" && ${command}` : `cd "${cwd}" && pwd`;
@@ -436,6 +443,30 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
       openWindow("shell");
     }
   }, [openWindow]);
+
+  /**
+   * Re-inject the pending initial command into a freshly-mounted shell
+   * window. Called by DesktopWindow once the ShellPanel reports its
+   * imperative handle (so the PTY writer is ready).
+   */
+  const registerShellHandle = useCallback((id: WindowId, handle: ShellPanelHandle | null) => {
+    if (handle) {
+      shellHandlesRef.current.set(id, handle);
+      // If this window was opened with a pending initial command, run it
+      // now — the first PTY handshake is complete by the time the handle
+      // is exposed. `shellInitialCmd` is read once and cleared so a
+      // future window (opened with no command) doesn't get a stale one.
+      const pending = shellInitialCmd;
+      if (pending && windows.get(id)?.shellCmd === pending) {
+        handle.runCommand(pending);
+        setShellInitialCmd(null);
+      } else {
+        handle.focus();
+      }
+    } else {
+      shellHandlesRef.current.delete(id);
+    }
+  }, [shellInitialCmd, windows]);
 
   // ── Keyboard shortcuts ───────────────────────────────────────────────────
   //
@@ -584,6 +615,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
                 shellInitialCmd={shellInitialCmd}
                 onShellOpen={openShellWindow}
                 onLaunchApp={openWindow}
+                onShellHandle={(handle) => registerShellHandle(win.id, handle)}
               />
             );
           })}
@@ -692,13 +724,20 @@ interface DesktopWindowProps {
   shellInitialCmd?: string | null;
   onShellOpen?: (cwd?: string, command?: string) => void;
   onLaunchApp?: (appId: string) => void;
+  /**
+   * Called once with the live ShellPanel handle when this window is a
+   * shell and once more with `null` on unmount. Non-shell windows never
+   * call this. Lets Workspace inject a pending initial command into the
+   * PTY after the handshake completes.
+   */
+  onShellHandle?: (handle: ShellPanelHandle | null) => void;
 }
 
 function DesktopWindow({
   win, def, Panel, focused, dragging, resizing,
   onFocus, onClose, onMinimize, onMaximize,
   onTitlebarMouseDown, onResizeMouseDown, session,
-  shellInitialCmd, onShellOpen, onLaunchApp,
+  shellInitialCmd, onShellOpen, onLaunchApp, onShellHandle,
 }: DesktopWindowProps) {
   // Apps that don't need an ADB session (Launcher / Dash / Settings) render
   // even before a device is connected. Everything else gates on session.
@@ -715,6 +754,36 @@ function DesktopWindow({
   const style: React.CSSProperties = isMaximized
     ? { top: 0, left: 0, width: "100%", height: "100%", zIndex: win.zIndex }
     : { top: win.y, left: win.x, width: win.width, height: win.height, zIndex: win.zIndex };
+
+  // The Shell panel is the only app that uses forwardRef +
+  // useImperativeHandle — Workspace needs to call runCommand() once the
+  // PTY is ready (so commands from File Manager's "Open shell here" or
+  // the sidebar don't race the first handshake). We branch here on
+  // the app id rather than passing the ref via the generic Panel
+  // component, because every other registered app ignores refs.
+  //
+  // Tech debt note: the "right" registry-native fix is to lift the
+  // imperative-handle contract into AppDefinition (e.g. a
+  // `imperativeHandle?: boolean` flag plus an `AppProps.ref` field), so
+  // DesktopWindow can render all apps through the same branch. Skipped
+  // here to keep this commit small — any new component that wants
+  // ref-forwarding will need the same wrapper until the registry grows
+  // that flag.
+  const isShell = win.appId === "shell";
+
+  const panelNode = isShell ? (
+    <ShellPanel
+      ref={(h) => onShellHandle?.(h)}
+      session={safeSession as AdbSession}
+      initialCommand={shellInitialCmd ?? win.shellCmd ?? undefined}
+    />
+  ) : (
+    <Panel
+      session={safeSession as never}
+      onOpenShell={onShellOpen ? (cwd) => onShellOpen(cwd) : undefined}
+      onLaunchApp={onLaunchApp}
+    />
+  );
 
   return (
     <div
@@ -770,11 +839,7 @@ function DesktopWindow({
       </div>
 
       <div className="window-content">
-        <Panel
-          session={safeSession as never}
-          onOpenShell={onShellOpen ? (cwd) => onShellOpen(cwd) : undefined}
-          onLaunchApp={onLaunchApp}
-        />
+        {panelNode}
       </div>
 
       {!isMaximized && (
