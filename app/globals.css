@@ -131,6 +131,15 @@ pre {
   display: grid;
   grid-template-columns: 260px 1fr;
   min-height: 100vh;
+  /* Center fixed Dock within the right column (desktop area), not the viewport.
+     260px sidebar / 2 = 130px offset so dock stays visually centered relative
+     to where the desktop actually is. */
+  --sidebar-half: 130px;
+  transition: grid-template-columns 0.2s ease;
+}
+.app-shell.sidebar-collapsed {
+  grid-template-columns: 52px 1fr;
+  --sidebar-half: 26px;
 }
 
 /* ── Sidebar (left panel, same width as brand header) ─────────────────── */
@@ -204,6 +213,74 @@ pre {
   border-top: 1px solid var(--border);
   font-size: 12px;
   color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* ── Sidebar collapse button ───────────────────────────────────────────── */
+.sidebar-collapse-btn {
+  margin-left: auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+.sidebar-collapse-btn:hover {
+  background: var(--bg-elev-2);
+  color: var(--text);
+}
+
+/* ── Sidebar collapsed state ──────────────────────────────────────────── */
+.sidebar.collapsed {
+  width: 52px;
+  min-width: 52px;
+  padding: 10px 6px 8px;
+}
+.sidebar.collapsed .sidebar-brand .brand-name,
+.sidebar.collapsed .sidebar-section,
+.sidebar.collapsed .sidebar-footer .ver-ver,
+.sidebar.collapsed .sidebar-footer .ver-time {
+  display: none;
+}
+.sidebar.collapsed .sidebar-build-info {
+  align-items: center;
+}
+
+/* ── Build info footer (version + git hash + build time) ──────────────── */
+.sidebar-build-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.sidebar-build-info .ver-ver {
+  color: var(--text);
+  font-weight: 600;
+  font-size: 12px;
+}
+.sidebar-build-info .ver-hash {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  align-self: flex-start;
+}
+.sidebar-build-info .ver-time {
+  color: var(--text-dim);
+  font-size: 10px;
 }
 
 /* ── xterm.js overrides — match our theme tokens ───────────────────────── */
@@ -441,10 +518,13 @@ pre {
 /* ── Dock ─────────────────────────────────────────────────────────────── */
 /* ── Dock ─────────────────────────────────────────────────────────────────── */
 .dock {
-  /* Floating centered bar — true macOS style */
+  /* Floating centered bar — true macOS style.
+     left: 50% centers in viewport, but the sidebar takes 260px on the left,
+     so we shift right by half the sidebar width so the dock stays visually
+     centered within the desktop area (the right column of the grid). */
   position: fixed;
   bottom: 12px;
-  left: 50%;
+  left: calc(50% + var(--sidebar-half, 130px));
   transform: translateX(-50%);
   z-index: 1000;
 
@@ -664,11 +744,16 @@ section.panel .panel-desc {
 .row {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
+  min-width: 0;
 }
 .row > * {
   flex: 0 0 auto;
+}
+.row > *:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .field {

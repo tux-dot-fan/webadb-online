@@ -64,6 +64,14 @@ const DEFAULT_WIN_SIZE = { width: 640, height: 420 };
 const MIN_WIN_SIZE = { width: 320, height: 200 };
 const WIN_OFFSET = 24; // cascade offset per new window
 
+// Format ISO timestamp → compact "YYYY-MM-DD HH:MM" local time
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const pad = (n: number) => n.toString().padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 // ── Workspace ────────────────────────────────────────────────────────────────
 
 interface WorkspaceProps {
@@ -72,7 +80,7 @@ interface WorkspaceProps {
   buildTimestamp: string;
 }
 
-export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
+export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: WorkspaceProps) {
   const state = useAdbState();
   const session = useAdbSession();
   const supported = useAdbSupported();
@@ -96,6 +104,16 @@ export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
 
   // Which app types are visible in the Dock "active" indicator
   const [activeApps, setActiveApps] = useState<Set<AppType>>(new Set(["shell"]));
+
+  // Sidebar collapse state — persisted to localStorage
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("webadb.sidebar.collapsed") === "1";
+  });
+  useEffect(() => {
+    try { localStorage.setItem("webadb.sidebar.collapsed", sidebarCollapsed ? "1" : "0"); }
+    catch { /* ignore */ }
+  }, [sidebarCollapsed]);
 
   // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -310,20 +328,37 @@ export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
   const topWin = topWinId ? windows.get(topWinId) : null;
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       {/* ── Left sidebar ─────────────────────────────────────────────── */}
-      <aside className="sidebar">
+      <aside className={`sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
         <div className="sidebar-brand">
           <span className="brand-icon">🧊</span>
           <span className="brand-name">WebADB</span>
+          <button
+            className="sidebar-collapse-btn"
+            onClick={() => setSidebarCollapsed((v) => !v)}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!sidebarCollapsed}
+          >
+            {sidebarCollapsed ? "›" : "‹"}
+          </button>
         </div>
-        <div className="sidebar-section">
-          <p className="sidebar-label">Device</p>
-          <DevicePanel state={state} session={session} supported={supported} />
-        </div>
+        {!sidebarCollapsed && (
+          <>
+            <div className="sidebar-section">
+              <p className="sidebar-label">Device</p>
+              <DevicePanel state={state} session={session} supported={supported} />
+            </div>
+          </>
+        )}
         <div className="sidebar-footer">
-          <ThemeToggle />
-          <span className="ver">{buildVersion}</span>
+          {!sidebarCollapsed && <ThemeToggle />}
+          <div className="sidebar-build-info" title={`Git: ${buildGitHash}\nBuilt: ${buildTimestamp}`}>
+            <span className="ver-ver">{buildVersion}</span>
+            <span className="ver-hash">{buildGitHash !== "dev" ? buildGitHash.slice(0, 7) : "dev"}</span>
+            <span className="ver-time">{buildTimestamp !== "dev" ? formatTimestamp(buildTimestamp) : "—"}</span>
+          </div>
         </div>
       </aside>
 
@@ -477,14 +512,12 @@ function DesktopWindow({
     >
       {/* ── Title bar ─────────────────────────────────────────────── */}
       <div
-        className="window-header"
+        className="window-titlebar"
         onMouseDown={onTitlebarMouseDown}
         onDoubleClick={onMaximize}
       >
-        <div className="window-title">
-          <span className="window-title-icon">{def.icon}</span>
-          <span className="window-title-text">{def.title}</span>
-        </div>
+        <span className="window-title-icon">{def.icon}</span>
+        <span className="window-title-text">{def.title}</span>
         <div className="window-controls">
           <button
             className="window-ctrl window-ctrl-minimize"
