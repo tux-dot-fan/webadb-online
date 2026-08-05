@@ -123,32 +123,37 @@ pre {
   word-break: break-word;
 }
 
+/* ── App shell — 2-column: sidebar + desktop ─────────────────────────── */
 .app-shell {
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-columns: 260px 1fr;
   min-height: 100vh;
 }
 
-header.site-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 14px 24px;
-  border-bottom: 1px solid var(--border);
+/* ── Sidebar (left panel, same width as brand header) ─────────────────── */
+.sidebar {
   background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 14px 14px 12px;
+  gap: 10px;
   position: sticky;
   top: 0;
-  z-index: 10;
+  height: 100vh;
+  overflow-y: auto;
 }
-header.site-header .brand {
+
+.sidebar-brand {
   display: flex;
   align-items: center;
-  gap: 10px;
-  font-weight: 700;
-  font-size: 18px;
-  color: var(--text);
+  gap: 8px;
+  padding: 4px 4px 10px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
 }
-header.site-header .brand .logo {
+
+.sidebar-brand .logo {
   width: 28px;
   height: 28px;
   border-radius: 6px;
@@ -157,38 +162,48 @@ header.site-header .brand .logo {
   align-items: center;
   justify-content: center;
   color: var(--on-accent);
-  font-weight: 800;
+  flex-shrink: 0;
 }
-header.site-header .meta {
-  color: var(--text-dim);
-  font-size: 13px;
+
+.sidebar-brand .brand-name {
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
 }
-header.site-header .header-right {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-header.site-header .theme-toggle {
-  /* Compact icon button — square, centered glyph, no border on hover
-     distraction. Inherits font/colors from the page, so it adapts to
-     both themes automatically. */
-  width: 32px;
-  height: 32px;
+
+.sidebar-brand .theme-toggle {
+  width: 28px;
+  height: 28px;
   padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  color: var(--text-dim);
+  transition: background 0.1s, color 0.1s;
 }
-header.site-header .theme-toggle:hover:not(:disabled) {
+.sidebar-brand .theme-toggle:hover {
   background: var(--bg-elev-2);
+  color: var(--text);
 }
 
-/* xterm.js overrides — match our theme tokens so the embedded terminal
-   looks at home in the page. The default xterm colors are slightly off
-   on our light theme (text is too dim) and the foreground/background
-   aren't tied to our color vars, so we re-bind them here. */
+.sidebar-footer {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+/* ── xterm.js overrides — match our theme tokens ───────────────────────── */
 .xterm {
   padding: 4px 8px;
 }
@@ -207,27 +222,211 @@ header.site-header .theme-toggle:hover:not(:disabled) {
   background: var(--text-dim);
 }
 
-main.workspace {
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: 0;
-  min-height: 0;
-}
-@media (max-width: 820px) {
-  main.workspace {
-    grid-template-columns: 1fr;
-  }
-}
-
-aside.sidebar {
-  border-right: 1px solid var(--border);
-  background: var(--bg-elev);
-  padding: 18px;
+/* ── Desktop area ─────────────────────────────────────────────────────── */
+.desktop-area {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  min-height: 100vh;
+  background: var(--bg);
+  position: relative;
 }
 
+/* ── Desktop not-connected hero (shown when no device) ────────────────── */
+.desktop-notconnected {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ── Windows layer ────────────────────────────────────────────────────── */
+.windows-layer {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  padding: 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  gap: 12px;
+}
+
+/* ── Individual floating window ───────────────────────────────────────── */
+.desktop-window {
+  width: 680px;
+  min-height: 360px;
+  max-height: calc(100vh - 140px);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18), 0 1px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Subtle animation when a window opens */
+  animation: window-open 0.18s ease-out;
+}
+@keyframes window-open {
+  from { opacity: 0; transform: scale(0.96) translateY(4px); }
+  to   { opacity: 1; transform: scale(1)    translateY(0); }
+}
+
+.desktop-window.focused {
+  border-color: var(--accent);
+  box-shadow: 0 4px 32px rgba(37, 99, 235, 0.2), 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+/* ── Window title bar ─────────────────────────────────────────────────── */
+.window-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  height: 38px;
+  background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  cursor: move; /* indicates draggable (future enhancement) */
+  user-select: none;
+}
+
+.window-title-icon {
+  font-size: 14px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.window-title-text {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.window-controls {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.window-ctrl {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-dim);
+  transition: background 0.1s, color 0.1s;
+}
+.window-ctrl:hover {
+  background: var(--border);
+  color: var(--text);
+}
+.window-ctrl-close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ── Window content ───────────────────────────────────────────────────── */
+.window-content {
+  flex: 1;
+  overflow: auto;
+  padding: 14px;
+  min-height: 0;
+}
+
+.window-content .panel {
+  /* Remove panel padding — window titlebar takes its place */
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  margin: 0;
+}
+.window-content .panel h2 {
+  display: none; /* Title shown in window titlebar instead */
+}
+
+/* ── Dock ─────────────────────────────────────────────────────────────── */
+.dock {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 8px 16px;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.dock-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 6px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 500;
+  transition: background 0.15s, color 0.15s;
+  position: relative;
+  min-width: 52px;
+}
+.dock-item:hover {
+  background: var(--bg-elev-2);
+  color: var(--text);
+}
+.dock-item.open {
+  color: var(--text);
+}
+.dock-item.minimized {
+  color: var(--text-dim);
+  opacity: 0.65;
+}
+.dock-item.open .dock-icon {
+  /* Slightly larger icon for open apps */
+  transform: scale(1.1);
+}
+
+.dock-icon {
+  font-size: 22px;
+  line-height: 1;
+  transition: transform 0.15s;
+}
+
+.dock-label {
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 52px;
+}
+
+.dock-dot {
+  position: absolute;
+  bottom: 3px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+/* ── section.panel (used inside window content) ─────────────────────────── */
 section.panel {
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -243,36 +442,6 @@ section.panel .panel-desc {
   color: var(--text-dim);
   font-size: 13px;
   margin: 0 0 14px;
-}
-
-.feature-tabs {
-  display: flex;
-  gap: 6px;
-  border-bottom: 1px solid var(--border);
-  padding: 0 24px;
-  background: var(--bg-elev);
-  flex-wrap: wrap;
-}
-.feature-tabs button {
-  background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  padding: 12px 16px;
-  color: var(--text-dim);
-  cursor: pointer;
-}
-.feature-tabs button.active {
-  color: var(--text);
-  border-bottom-color: var(--accent);
-}
-.feature-tabs button:hover:not(.active) {
-  color: var(--text);
-}
-
-.workspace-content {
-  padding: 24px;
-  overflow: auto;
 }
 
 .status-pill {
@@ -603,10 +772,34 @@ section.panel .panel-desc {
   font-size: 13px;
 }
 
-footer.site-footer {
-  border-top: 1px solid var(--border);
-  padding: 20px 24px;
-  text-align: center;
-  color: var(--text-dim);
-  font-size: 13px;
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+@media (max-width: 700px) {
+  .app-shell {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 1fr;
+  }
+  .sidebar {
+    position: static;
+    height: auto;
+    width: 100%;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .sidebar-brand {
+    border-bottom: none;
+    padding-bottom: 0;
+  }
+  .sidebar-footer {
+    display: none;
+  }
+  .windows-layer {
+    padding: 8px;
+  }
+  .desktop-window {
+    width: 100%;
+    min-height: 280px;
+  }
 }
