@@ -118,13 +118,17 @@ interface ContextMenu {
   entry: Entry;
   isDir: boolean;
   path: string;
+  isPinned: boolean;
 }
 
 function ContextMenuUI({
   menu,
   onClose,
   onOpen,
+  onPreview,
   onOpenTerminalHere,
+  onPin,
+  onUnpin,
   onCopyName,
   onCopyPath,
   onDownload,
@@ -132,7 +136,10 @@ function ContextMenuUI({
   menu: ContextMenu;
   onClose: () => void;
   onOpen: () => void;
+  onPreview: () => void;
   onOpenTerminalHere: () => void;
+  onPin: () => void;
+  onUnpin: () => void;
   onCopyName: () => void;
   onCopyPath: () => void;
   onDownload: () => void;
@@ -172,12 +179,32 @@ function ContextMenuUI({
     </button>
   );
 
+  const sep = () => <div className="ctx-sep" key={Math.random()} />;
+
   return (
     <div ref={ref} className="ctx-menu" style={style} role="menu">
-      {item("Open", "📂", onOpen)}
+      {/* Open */}
+      {item("Open", menu.isDir ? "📂" : "📄", onOpen)}
+
+      {/* Preview — only for files (not dirs) */}
+      {!menu.isDir && item("Preview", "👁", onPreview)}
+
+      {sep()}
+
+      {/* Open Terminal Here — only for directories */}
       {menu.isDir && item("Open Terminal Here", "🐚", onOpenTerminalHere)}
+
+      {/* Pin / Unpin — only for directories */}
+      {menu.isDir && menu.isPinned && item("Unpin from Sidebar", "☆", onUnpin)}
+      {menu.isDir && !menu.isPinned && item("Pin to Sidebar", "📌", onPin)}
+
+      {sep()}
+
+      {/* Copy */}
       {item("Copy Name", "📋", onCopyName)}
       {item("Copy Path", "🔗", onCopyPath)}
+
+      {/* Download — only for files */}
       {!menu.isDir && item("Download", "⬇", onDownload)}
     </div>
   );
@@ -202,10 +229,12 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
 
   // ── Multi-select ─────────────────────────────────────────────────────────
+  const [selectMode, setSelectMode] = useState(false); // multi-select toggle
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [lastSelected, setLastSelected] = useState<string | null>(null);
 
   function clearSelection() { setSelected(new Set()); setLastSelected(null); }
+  function exitSelectMode() { setSelectMode(false); clearSelection(); }
 
   const list = useCallback(async (path: string) => {
     setBusy(true);
@@ -227,7 +256,7 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
       });
       setEntries(out);
       setCwd(path);
-      clearSelection();
+      exitSelectMode();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setEntries(null);
@@ -330,6 +359,7 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
       entry,
       isDir: entry.type === LinuxFileType.Directory,
       path: fullPath(cwd, entry.name),
+      isPinned: pinned.includes(fullPath(cwd, entry.name)),
     });
   };
 
@@ -343,6 +373,18 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
 
   const ctxOpenTerminalHere = (path: string) => {
     onOpenShell?.(path);
+  };
+
+  const ctxPin = (path: string) => {
+    if (!pinned.includes(path)) setPinned((prev) => [...prev, path]);
+  };
+
+  const ctxUnpin = (path: string) => {
+    setPinned((prev) => prev.filter((p) => p !== path));
+  };
+
+  const ctxPreview = (entry: Entry) => {
+    void openPreview(entry);
   };
 
   const ctxCopyName = (name: string) => {
@@ -478,8 +520,19 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
               ))}
             </div>
 
-            {/* Right: upload */}
+            {/* Right: upload + select-mode toggle */}
             <div className="fm-toolbar-right">
+              <button
+                className={`fm-icon-btn${selectMode ? " active" : ""}`}
+                onClick={() => {
+                  if (selectMode) exitSelectMode();
+                  else setSelectMode(true);
+                }}
+                title={selectMode ? "Exit selection mode" : "Select multiple files"}
+                aria-pressed={selectMode}
+              >
+                ✓
+              </button>
               <label className="fm-upload-btn" title={uploading ? "Uploading…" : "Upload file here"}>
                 {uploading ? <span className="fm-uploading-dot">⬤</span> : <span>⬆ Upload</span>}
                 <input type="file" onChange={(e) => void onUpload(e)} disabled={uploading} style={{ display: "none" }} />
@@ -505,21 +558,8 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
               )}
 
               <div className="row header">
-                <div style={{ width: 28, flexShrink: 0 }}>
-                  <input
-                    type="checkbox"
-                    aria-label="Select all"
-                    checked={entries.length > 0 && selected.size === entries.length}
-                    onChange={(e) => {
-                      if (e.target.checked) {
-                        setSelected(new Set(entries.map((en) => en.name)));
-                        setLastSelected(entries.length > 0 ? entries[entries.length - 1].name : null);
-                      } else {
-                        clearSelection();
-                      }
-                    }}
-                  />
-                </div>
+                {/* 4px gutter when selectMode off; 28px checkbox when on */}
+                <div style={{ width: selectMode ? 28 : 4, flexShrink: 0, transition: "width 0.15s" }} />
                 <div>Name</div>
                 <div>Size</div>
                 <div>Mode</div>
@@ -534,10 +574,10 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
                 return (
                 <div
                   key={e.name}
-                  className={`row clickable${isSelected ? " selected" : ""}`}
+                  className={`row${isSelected ? " selected" : ""}${selectMode ? " sel-row" : " clickable"}`}
                   onClick={(evt) => {
-                    if (evt.ctrlKey || evt.metaKey || evt.shiftKey) {
-                      // Toggle selection
+                    if (selectMode) {
+                      // Toggle selection on checkbox click area or row click
                       setSelected((prev) => {
                         const next = new Set(prev);
                         if (next.has(e.name)) next.delete(e.name);
@@ -545,18 +585,15 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
                         return next;
                       });
                       setLastSelected(e.name);
-                    } else if (isSelected) {
-                      // Already selected and clicking without modifier → open/preview
-                      ctxOpen(e);
                     } else {
-                      // Clear selection and open
+                      // Normal mode: click = open/preview
                       clearSelection();
                       ctxOpen(e);
                     }
                   }}
                   onContextMenu={(ev) => {
-                    // Select the item before showing context menu
-                    if (!isSelected) {
+                    if (!selectMode) {
+                      // In normal mode, select the item before showing ctx menu
                       setSelected(new Set([e.name]));
                       setLastSelected(e.name);
                     }
@@ -564,26 +601,37 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
                   }}
                   title={
                     e.type === LinuxFileType.Directory
-                      ? "Click to open · Ctrl/Cmd+click to select"
-                      : "Click to preview · Ctrl/Cmd+click to select"
+                      ? "Click to open"
+                      : "Click to preview"
                   }
                 >
-                  <div style={{ width: 28, flexShrink: 0 }}>
-                    <input
-                      type="checkbox"
-                      aria-label={`Select ${e.name}`}
-                      checked={isSelected}
-                      onChange={() => {
-                        setSelected((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(e.name)) next.delete(e.name);
-                          else next.add(e.name);
-                          return next;
-                        });
-                        setLastSelected(e.name);
-                      }}
-                      onClick={(evt) => evt.stopPropagation()}
-                    />
+                  {/* 4px gutter when selectMode off; full checkbox when on */}
+                  <div
+                    style={{
+                      width: selectMode ? 28 : 4,
+                      flexShrink: 0,
+                      transition: "width 0.15s",
+                      overflow: "hidden",
+                      cursor: selectMode ? "pointer" : "default",
+                    }}
+                  >
+                    {selectMode && (
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${e.name}`}
+                        checked={isSelected}
+                        onChange={() => {
+                          setSelected((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(e.name)) next.delete(e.name);
+                            else next.add(e.name);
+                            return next;
+                          });
+                          setLastSelected(e.name);
+                        }}
+                        onClick={(evt) => evt.stopPropagation()}
+                      />
+                    )}
                   </div>
                   <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {e.type === LinuxFileType.Link ? "↪ " :
@@ -613,10 +661,13 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
           menu={contextMenu}
           onClose={() => setContextMenu(null)}
           onOpen={() => ctxOpen(contextMenu.entry)}
+          onPreview={() => ctxPreview(contextMenu.entry)}
           onOpenTerminalHere={() => ctxOpenTerminalHere(contextMenu.path)}
+          onPin={() => ctxPin(contextMenu.path)}
+          onUnpin={() => ctxUnpin(contextMenu.path)}
           onCopyName={() => ctxCopyName(contextMenu.entry.name)}
           onCopyPath={() => ctxCopyPath(contextMenu.path)}
-          onDownload={() => download(contextMenu.entry)}
+          onDownload={() => void download(contextMenu.entry)}
         />
       )}
 
