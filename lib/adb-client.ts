@@ -35,17 +35,18 @@ export interface AdbSession {
   readonly disconnected: Promise<void>;
 }
 
-const ADB_VENDOR_FILTERS = mergeDefaultAdbInterfaceFilter([
-  { vendorId: 0x18d1 }, // Google
-  { vendorId: 0x04e8 }, // Samsung
-  { vendorId: 0x22b8 }, // Motorola
-  { vendorId: 0x0bb4 }, // HTC
-  { vendorId: 0x1004 }, // LG
-  { vendorId: 0x12d1 }, // Huawei
-  { vendorId: 0x2717 }, // Xiaomi
-  { vendorId: 0x2e04 }, // Oppo / OnePlus / Realme
-  { vendorId: 0x2c7c }, // Qualcomm (some newer devices)
-]);
+/**
+ * Pass-through: don't filter by vendorId. The ya-webadb `AdbDefaultInterfaceFilter`
+ * (classCode=0xFF, subclassCode=0x42, protocolCode=1) is the official Android
+ * ADB interface class — it matches every compliant Android device, regardless
+ * of OEM. Earlier versions of this file listed ~25 vendor IDs, but every such
+ * list is necessarily incomplete (new OEMs appear, carriers rebadge devices
+ * under their own USB IDs, debug ROMs use random IDs). Forcing a vendor
+ * whitelist silently hides devices from the chooser dialog, which then
+ * reports "no compatible devices found" to the user. The browser still
+ * requires the user to manually pick a device, so leaving it open is safe.
+ */
+const ADB_DEFAULT_FILTERS = mergeDefaultAdbInterfaceFilter(undefined);
 
 // Auth credentials are intentionally not stored — webadb.online never sees a
 // private key. If a device requires RSA authentication, the user must tap
@@ -99,13 +100,36 @@ export class AdbClient {
     this.setState({ kind: "requesting" });
     try {
       this.manager ??= new AdbDaemonWebUsbDeviceManager(navigator.usb);
-      const device = await this.manager.requestDevice({
-        filters: ADB_VENDOR_FILTERS,
+      let device = await this.manager.requestDevice({
+        filters: ADB_DEFAULT_FILTERS,
       });
       if (!device) {
-        // User cancelled the chooser dialog.
-        this.setState({ kind: "disconnected" });
-        return;
+        // The chooser dialog reported no matching devices. This can mean
+        // three things and the user can't tell which:
+        //   1. They cancelled the chooser before picking anything.
+        //   2. The device is not yet plugged in.
+        //   3. The device is plugged in but USB debugging is off, the cable
+        //      is charge-only, or the device is in "PTP / charging" mode
+        //      instead of "File transfer / MTP".
+        // Try ONE more time WITHOUT filters to see if the device is even
+        // answering WebUSB — if it still doesn't show up, it's hardware,
+        // not our filter list, and we tell the user exactly what to check.
+        device = await this.manager.requestDevice();
+        if (!device) {
+          this.setState({
+            kind: "error",
+            message:
+              "No compatible devices found. Check:\n" +
+              "  • USB debugging enabled (Settings → About → tap Build 7× →\n" +
+              "    Developer options → USB debugging)\n" +
+              "  • Phone is unlocked and shows the 'Allow USB debugging'\n" +
+              "    prompt — tap Allow\n" +
+              "  • USB mode is 'File transfer / MTP', not just charging\n" +
+              "  • Cable supports data, not charge-only\n" +
+              "  • Device is plugged in BEFORE clicking Connect",
+          });
+          return;
+        }
       }
 
       const label = device.name || "Android device";
