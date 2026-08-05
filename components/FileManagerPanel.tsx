@@ -89,6 +89,23 @@ function previewKind(name: string): "text" | "image" | "video" | "audio" | "bina
   return "binary";
 }
 
+/**
+ * Single preview state. Holds the active preview plus the list of
+ * sibling files of the same kind in the current directory — used by
+ * the image viewer to support prev/next navigation and the macOS-style
+ * thumbnail strip.
+ */
+interface PreviewState {
+  url: string;
+  name: string;
+  kind: "text" | "image" | "video" | "audio" | "binary";
+  content?: string;
+  /** All entries in the same directory of the same previewable kind. */
+  siblings: Entry[];
+  /** Index of the current file inside `siblings`. */
+  index: number;
+}
+
 // ── Utilities ────────────────────────────────────────────────────────────────
 
 function fullPath(cwd: string, name: string) {
@@ -242,12 +259,7 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
   const [busy, setBusy] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [preview, setPreview] = useState<{
-    url: string;
-    name: string;
-    kind: "text" | "image" | "video" | "audio" | "binary";
-    content?: string;
-  } | null>(null);
+  const [preview, setPreview] = useState<PreviewState | null>(null);
   const [pinned, setPinned] = useState<string[]>(loadPins);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
 
@@ -319,10 +331,29 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
 
   // ── Preview / Download ────────────────────────────────────────────────────
 
+  /**
+   * Build the list of previewable siblings for a given file (used by the
+   * image viewer for prev/next navigation). Only files of the same kind
+   * are included — i.e. when viewing an image we list other images only.
+   */
+  function siblingsOf(entry: Entry): Entry[] {
+    if (!entries) return [entry];
+    const kind = previewKind(entry.name);
+    if (kind === "binary") return [entry];
+    return entries.filter(
+      (e) => e.type === LinuxFileType.File && previewKind(e.name) === kind,
+    );
+  }
+
   async function openPreview(entry: Entry) {
     if (entry.type !== LinuxFileType.File) return;
     const remote = fullPath(cwd, entry.name);
     const kind = previewKind(entry.name);
+    const sibs = siblingsOf(entry);
+    const idx = Math.max(0, sibs.findIndex((e) => e.name === entry.name));
+
+    // Revoke any prior blob URL so we don't leak memory between previews.
+    if (preview?.url) URL.revokeObjectURL(preview.url);
 
     try {
       const stream = session.adb.sync.read(remote) as unknown as ReadableStream<Uint8Array>;
@@ -332,27 +363,65 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
           setError(`Text file too large (${formatSize(entry.size)}). Download it to view.`); return;
         }
         const blob = await streamToBlob(stream);
-        setPreview({ url: "", name: entry.name, kind: "text", content: await blob.text() });
+        setPreview({ url: "", name: entry.name, kind: "text", content: await blob.text(),
+          siblings: sibs, index: idx });
       } else if (kind === "image") {
         if (entry.size > 100 * 1024 * 1024) {
           setError(`Image too large (${formatSize(entry.size)}). Download it to view.`); return;
         }
         const blob = await streamToBlob(stream);
-        setPreview({ url: URL.createObjectURL(blob), name: entry.name, kind: "image" });
+        setPreview({ url: URL.createObjectURL(blob), name: entry.name, kind: "image",
+          siblings: sibs, index: idx });
       } else if (kind === "video") {
         if (entry.size > 500 * 1024 * 1024) {
           setError(`Video too large (${formatSize(entry.size)}). Download it to view.`); return;
         }
         const blob = await streamToBlob(stream);
-        setPreview({ url: URL.createObjectURL(blob), name: entry.name, kind: "video" });
+        setPreview({ url: URL.createObjectURL(blob), name: entry.name, kind: "video",
+          siblings: sibs, index: idx });
       } else if (kind === "audio") {
         if (entry.size > 100 * 1024 * 1024) {
           setError(`Audio too large (${formatSize(entry.size)}). Download to listen.`); return;
         }
         const blob = await streamToBlob(stream);
-        setPreview({ url: URL.createObjectURL(blob), name: entry.name, kind: "audio" });
+        setPreview({ url: URL.createObjectURL(blob), name: entry.name, kind: "audio",
+          siblings: sibs, index: idx });
       } else {
-        setPreview({ url: "", name: entry.name, kind: "binary" });
+        setPreview({ url: "", name: entry.name, kind: "binary",
+          siblings: sibs, index: idx });
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /**
+   * Jump to a different sibling (called by ← / → in the image viewer or
+   * by clicking a thumbnail). Looks up the next file's path, fetches it,
+   * and replaces the preview state in place. Same blob-URL hygiene as
+   * openPreview.
+   */
+  async function jumpToSibling(newIndex: number) {
+    if (!preview) return;
+    const sib = preview.siblings[newIndex];
+    if (!sib) return;
+    const remote = fullPath(cwd, sib.name);
+    const kind = previewKind(sib.name);
+    try {
+      const stream = session.adb.sync.read(remote) as unknown as ReadableStream<Uint8Array>;
+      if (kind === "image" || kind === "video" || kind === "audio") {
+        if (sib.size > 500 * 1024 * 1024) {
+          setError(`File too large to preview (${formatSize(sib.size)}).`); return;
+        }
+        const blob = await streamToBlob(stream);
+        if (preview.url) URL.revokeObjectURL(preview.url);
+        setPreview({
+          url: URL.createObjectURL(blob),
+          name: sib.name,
+          kind,
+          siblings: preview.siblings,
+          index: newIndex,
+        });
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -735,76 +804,244 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
 
       {/* ── Preview modal ──────────────────────────────────────────── */}
       {preview && (
-        <div
-          style={{
-            position: "fixed", inset: 0, zIndex: 1000,
-            background: "rgba(0,0,0,0.6)",
-            display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
-          }}
-          onClick={(e) => { if (e.target === e.currentTarget) void closePreview(); }}
-        >
-          <div
-            style={{
-              background: "var(--bg-elev)", border: "1px solid var(--border)",
-              borderRadius: 12, maxWidth: 900, width: "100%",
-              maxHeight: "85vh", display: "flex", flexDirection: "column", overflow: "hidden",
-            }}
-          >
-            <div style={{
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-              padding: "12px 16px", borderBottom: "1px solid var(--border)", flexShrink: 0,
-            }}>
-              <span style={{ fontFamily: "var(--mono)", fontSize: 13, color: "var(--text-dim)",
-                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {preview.name}
-              </span>
-              <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+        <PreviewModal
+          preview={preview}
+          cwd={cwd}
+          session={session}
+          onClose={closePreview}
+          onPrev={() => void jumpToSibling(Math.max(0, preview.index - 1))}
+          onNext={() => void jumpToSibling(Math.min(preview.siblings.length - 1, preview.index + 1))}
+          onJump={(i) => void jumpToSibling(i)}
+          onDownload={() => void download({
+            name: preview.name,
+            type: LinuxFileType.File, mode: 0, size: 0, mtime: 0,
+          } as Entry)}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── PreviewModal ────────────────────────────────────────────────────────────
+//
+// Modal overlay that hosts the preview UI. For images it adds keyboard
+// ←/→ navigation between siblings and a macOS-style thumbnail strip at
+// the bottom. Each thumbnail is lazy-loaded on first paint and cached.
+
+interface PreviewModalProps {
+  preview: PreviewState;
+  cwd: string;
+  session: AdbSession;
+  onClose: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+  onJump: (index: number) => void;
+  onDownload: () => void;
+}
+
+function PreviewModal({
+  preview, cwd, session, onClose, onPrev, onNext, onJump, onDownload,
+}: PreviewModalProps) {
+  const isImage = preview.kind === "image";
+  const hasSiblings = preview.siblings.length > 1;
+
+  // Keyboard navigation for the image viewer.
+  useEffect(() => {
+    if (!isImage) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "ArrowLeft") { e.preventDefault(); onPrev(); }
+      else if (e.key === "ArrowRight") { e.preventDefault(); onNext(); }
+      else if (e.key === "Escape") { e.preventDefault(); onClose(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isImage, onPrev, onNext, onClose]);
+
+  return (
+    <div
+      className="preview-overlay"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="preview-modal">
+        <div className="preview-header">
+          <span className="preview-title">
+            {preview.name}
+            {hasSiblings && (
+              <span className="preview-count"> ({preview.index + 1} / {preview.siblings.length})</span>
+            )}
+          </span>
+          <div className="preview-actions">
+            {isImage && hasSiblings && (
+              <>
                 <button
-                  onClick={() => void download({ name: preview.name, type: LinuxFileType.File, mode: 0, size: 0, mtime: 0 } as Entry)}
-                  className="primary" style={{ padding: "4px 14px", fontSize: 13 }}
-                >⬇ Download</button>
-                <button onClick={closePreview} style={{ padding: "4px 10px", fontSize: 13 }}>✕</button>
-              </div>
-            </div>
-            <div style={{ flex: 1, overflow: "auto", padding: 16 }}>
-              {preview.kind === "text" && preview.content !== undefined && (
-                <pre style={{ margin: 0, fontFamily: "var(--mono)", fontSize: 12, color: "var(--text)",
-                  whiteSpace: "pre-wrap", wordBreak: "break-all", maxHeight: "65vh",
-                  overflow: "auto", background: "var(--bg)", padding: 12, borderRadius: 6,
-                  border: "1px solid var(--border)" }}>
-                  {preview.content}
-                </pre>
-              )}
-              {preview.kind === "image" && preview.url && (
-                <img src={preview.url} alt={preview.name} style={{ maxWidth: "100%", maxHeight: "65vh",
-                  display: "block", margin: "0 auto", borderRadius: 6, objectFit: "contain" }} />
-              )}
-              {preview.kind === "video" && preview.url && (
-                <video controls autoPlay src={preview.url} style={{ maxWidth: "100%", maxHeight: "65vh",
-                  display: "block", margin: "0 auto", borderRadius: 6 }}>
-                  Your browser does not support this video format.
-                </video>
-              )}
-              {preview.kind === "audio" && preview.url && (
-                <div style={{ textAlign: "center", padding: "24px 16px" }}>
-                  <div style={{ fontSize: 48, marginBottom: 16 }}>🎵</div>
-                  <p style={{ color: "var(--text-dim)", margin: "0 0 16px", fontSize: 14 }}>{preview.name}</p>
-                  <audio controls autoPlay src={preview.url} style={{ width: "100%", maxWidth: 480 }}>
-                    Your browser does not support audio playback.
-                  </audio>
-                </div>
-              )}
-              {preview.kind === "binary" && (
-                <div style={{ textAlign: "center", padding: "40px 20px", color: "var(--text-dim)" }}>
-                  <div style={{ fontSize: 32, marginBottom: 12 }}>📄</div>
-                  <p style={{ margin: "0 0 16px" }}>No preview available for this file type.</p>
-                  <button onClick={() => void download({ name: preview.name, type: LinuxFileType.File, mode: 0, size: 0, mtime: 0 } as Entry)} className="primary">⬇ Download</button>
-                </div>
-              )}
-            </div>
+                  type="button"
+                  className="preview-nav-btn"
+                  onClick={onPrev}
+                  disabled={preview.index <= 0}
+                  title="Previous image (←)"
+                  aria-label="Previous image"
+                >‹</button>
+                <button
+                  type="button"
+                  className="preview-nav-btn"
+                  onClick={onNext}
+                  disabled={preview.index >= preview.siblings.length - 1}
+                  title="Next image (→)"
+                  aria-label="Next image"
+                >›</button>
+              </>
+            )}
+            <button onClick={onDownload} className="primary">⬇ Download</button>
+            <button onClick={onClose} aria-label="Close preview">✕</button>
           </div>
         </div>
-      )}
+
+        <div className="preview-body">
+          {preview.kind === "text" && preview.content !== undefined && (
+            <pre className="preview-text">
+              {preview.content}
+            </pre>
+          )}
+          {preview.kind === "image" && preview.url && (
+            <img
+              src={preview.url}
+              alt={preview.name}
+              className="preview-image"
+              draggable={false}
+            />
+          )}
+          {preview.kind === "video" && preview.url && (
+            <video
+              controls autoPlay src={preview.url}
+              className="preview-video"
+            >
+              Your browser does not support this video format.
+            </video>
+          )}
+          {preview.kind === "audio" && preview.url && (
+            <div className="preview-audio">
+              <div className="preview-audio-icon">🎵</div>
+              <p className="preview-audio-name">{preview.name}</p>
+              <audio controls autoPlay src={preview.url} style={{ width: "100%", maxWidth: 480 }}>
+                Your browser does not support audio playback.
+              </audio>
+            </div>
+          )}
+          {preview.kind === "binary" && (
+            <div className="preview-binary">
+              <div className="preview-binary-icon">📄</div>
+              <p>No preview available for this file type.</p>
+              <button onClick={onDownload} className="primary">⬇ Download</button>
+            </div>
+          )}
+        </div>
+
+        {/* ── Thumbnail strip — only for image viewer ──────────────── */}
+        {isImage && hasSiblings && (
+          <ThumbnailStrip
+            siblings={preview.siblings}
+            cwd={cwd}
+            session={session}
+            currentIndex={preview.index}
+            onJump={onJump}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── ThumbnailStrip ──────────────────────────────────────────────────────────
+
+interface ThumbnailStripProps {
+  siblings: Entry[];
+  cwd: string;
+  session: AdbSession;
+  currentIndex: number;
+  onJump: (index: number) => void;
+}
+
+function ThumbnailStrip({
+  siblings, cwd, session, currentIndex, onJump,
+}: ThumbnailStripProps) {
+  // Lazy-load thumbnails: we fetch each sibling's blob on first viewport
+  // intersection. The current image is fetched eagerly so the strip
+  // doesn't pop in after navigation. Cached by entry.name.
+  const [thumbs, setThumbs] = useState<Record<string, string>>({});
+  const stripRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Cancel flag so a later unmount doesn't set state from a stale fetch.
+    let cancelled = false;
+    const ensure = async (entry: Entry) => {
+      if (thumbs[entry.name]) return;
+      try {
+        const remote = cwd.replace(/\/$/, "") + "/" + entry.name;
+        const stream: ReadableStream<Uint8Array> =
+          session.adb.sync.read(remote) as unknown as ReadableStream<Uint8Array>;
+        const blob = await streamToBlob(stream);
+        if (cancelled) return;
+        const url = URL.createObjectURL(blob);
+        setThumbs((prev) => ({ ...prev, [entry.name]: url }));
+      } catch { /* ignore — failed thumb shows placeholder */ }
+    };
+    // Eagerly load the current item + its immediate neighbours so the
+    // user sees thumbnails for adjacent images right away.
+    const eager = new Set<number>([currentIndex]);
+    if (currentIndex + 1 < siblings.length) eager.add(currentIndex + 1);
+    if (currentIndex - 1 >= 0) eager.add(currentIndex - 1);
+    for (const i of eager) void ensure(siblings[i]);
+
+    // IntersectionObserver lazily loads the rest as the strip scrolls.
+    const strip = stripRef.current;
+    if (!strip || typeof IntersectionObserver === "undefined") return;
+    const tiles = Array.from(strip.querySelectorAll<HTMLElement>("[data-thumb-idx]"));
+    const io = new IntersectionObserver((entries) => {
+      for (const obs of entries) {
+        if (!obs.isIntersecting) continue;
+        const target = obs.target as HTMLElement;
+        const i = Number.parseInt(target.dataset.thumbIdx ?? "-1", 10);
+        if (i >= 0) void ensure(siblings[i]);
+      }
+    }, { root: strip, rootMargin: "100px" });
+    for (const t of tiles) io.observe(t);
+    return () => {
+      cancelled = true;
+      io.disconnect();
+    };
+    // We intentionally depend on `cwd` + the index set so the strip
+    // re-evaluates whenever the user navigates to a new directory.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cwd, siblings, currentIndex]);
+
+  // Revoke object URLs on unmount to avoid leaking thumbnails.
+  useEffect(() => {
+    return () => {
+      for (const url of Object.values(thumbs)) URL.revokeObjectURL(url);
+    };
+  }, [thumbs]);
+
+  return (
+    <div className="preview-thumbs" ref={stripRef}>
+      {siblings.map((s, i) => {
+        const url = thumbs[s.name];
+        const active = i === currentIndex;
+        return (
+          <button
+            key={s.name}
+            type="button"
+            className={`preview-thumb${active ? " is-active" : ""}`}
+            data-thumb-idx={i}
+            onClick={() => onJump(i)}
+            title={s.name}
+          >
+            {url
+              ? <img src={url} alt="" draggable={false} />
+              : <span className="preview-thumb-placeholder">{s.name[0]?.toUpperCase() ?? "?"}</span>
+            }
+          </button>
+        );
+      })}
     </div>
   );
 }

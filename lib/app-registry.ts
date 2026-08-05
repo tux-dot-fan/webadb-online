@@ -74,6 +74,7 @@ import { WiFiAdbPanel }      from "@/components/WiFiAdbPanel";
 import { SettingsApp }       from "@/components/SettingsApp";
 import { LauncherApp }       from "@/components/LauncherApp";
 import { DashApp }           from "@/components/DashApp";
+import { TextEditorApp }     from "@/components/TextEditorApp";
 
 /**
  * The single source of truth for what apps exist. Workspace reads this list
@@ -160,6 +161,17 @@ export const REGISTERED_APPS: AppDefinition[] = [
     launchOnStartup: false,
     allowMultipleWindows: false,
     description: "Per-core CPU usage, memory water level, and process list.",
+  },
+  {
+    id: "editor",
+    title: "Text Editor",
+    icon: "📝",
+    Component: TextEditorApp,
+    defaultSize: { width: 760, height: 520 },
+    showInDock: true,
+    launchOnStartup: false,
+    allowMultipleWindows: true,
+    description: "Edit text files on the device or in localStorage.",
   },
   {
     id: "screenshot",
