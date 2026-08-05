@@ -21,14 +21,37 @@ interface Entry {
 // ── Pinned paths (localStorage) ─────────────────────────────────────────────
 
 const PINNED_STORAGE_KEY = "webadb.fmgr.pins";
+const PINS_SEEDED_KEY = "webadb.fmgr.pins.seeded"; // tracks first-run default seeding
 const SELECTED_STORAGE_KEY = "webadb.fmgr.selected"; // optional persistence
+
+// Reasonable Android default locations — shown as pins on first run so the
+// user has somewhere to start without having to navigate from / every time.
+const DEFAULT_PINS: string[] = [
+  "/sdcard",
+  "/sdcard/DCIM",
+  "/sdcard/Download",
+  "/sdcard/Pictures",
+  "/sdcard/Movies",
+  "/sdcard/Music",
+  "/sdcard/Documents",
+  "/storage/emulated/0/Android/data",
+];
 
 function loadPins(): string[] {
   try {
-    return JSON.parse(localStorage.getItem(PINNED_STORAGE_KEY) ?? "[]");
-  } catch {
-    return [];
-  }
+    const raw = localStorage.getItem(PINNED_STORAGE_KEY);
+    if (raw !== null) {
+      // User already has pins (even if empty) — don't override their choices.
+      return JSON.parse(raw);
+    }
+  } catch { /* ignore */ }
+  // First-ever load — seed sensible Android defaults so the user can start
+  // browsing common folders without having to navigate from / first.
+  try {
+    localStorage.setItem(PINNED_STORAGE_KEY, JSON.stringify(DEFAULT_PINS));
+    localStorage.setItem(PINS_SEEDED_KEY, "1");
+  } catch { /* ignore */ }
+  return DEFAULT_PINS;
 }
 
 function savePins(pins: string[]) {
@@ -268,6 +291,16 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
   // Initial load
   useEffect(() => { void list("/sdcard"); }, [list]);
 
+  // ── Path editing (double-click breadcrumb) ───────────────────────────────
+  const [pathEditing, setPathEditing] = useState(false);
+  const pathInputRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (pathEditing && pathInputRef.current) {
+      pathInputRef.current.focus();
+      pathInputRef.current.select();
+    }
+  }, [pathEditing]);
+
   // ── Pin management ───────────────────────────────────────────────────────
 
   const pinCurrent = () => {
@@ -499,25 +532,53 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
               >↺</button>
             </div>
 
-            {/* Breadcrumb */}
-            <div className="fm-breadcrumb" role="navigation" aria-label="Path">
-              {segments.map((seg, i) => (
-                <span key={i} className="fm-breadcrumb-item">
-                  {i > 0 && <span className="fm-breadcrumb-sep">/</span>}
-                  <button
-                    className="fm-breadcrumb-btn"
-                    onClick={() => {
-                      const target = seg === "/"
-                        ? "/"
-                        : "/" + segments.slice(1, i + 1).join("/");
-                      void list(target);
-                    }}
-                    title={seg === "/" ? "Root" : seg}
-                  >
-                    {seg === "/" ? "📁" : seg}
-                  </button>
-                </span>
-              ))}
+            {/* Breadcrumb (double-click to edit path) */}
+            <div
+              className="fm-breadcrumb"
+              role="navigation"
+              aria-label="Path"
+              onDoubleClick={() => setPathEditing(true)}
+              title="Double-click to edit path"
+            >
+              {pathEditing ? (
+                <input
+                  ref={pathInputRef}
+                  className="fm-breadcrumb-input"
+                  defaultValue={cwd}
+                  onKeyDown={(ev) => {
+                    if (ev.key === "Enter") {
+                      const v = (ev.currentTarget.value || "").trim();
+                      if (v) void list(v.startsWith("/") ? v : "/" + v);
+                      setPathEditing(false);
+                    } else if (ev.key === "Escape") {
+                      setPathEditing(false);
+                    }
+                  }}
+                  onBlur={() => setPathEditing(false)}
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  aria-label="Edit path"
+                />
+              ) : (
+                segments.map((seg, i) => (
+                  <span key={i} className="fm-breadcrumb-item">
+                    {i > 0 && <span className="fm-breadcrumb-sep">/</span>}
+                    <button
+                      className="fm-breadcrumb-btn"
+                      onClick={() => {
+                        const target = seg === "/"
+                          ? "/"
+                          : "/" + segments.slice(1, i + 1).join("/");
+                        void list(target);
+                      }}
+                      title={seg === "/" ? "Root" : seg}
+                    >
+                      {seg === "/" ? "📁" : seg}
+                    </button>
+                  </span>
+                ))
+              )}
             </div>
 
             {/* Right: upload + select-mode toggle */}
@@ -566,7 +627,8 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
               </div>
               {entries.length === 0 && (
                 <div className="row">
-                  <div className="muted">(empty directory)</div><div></div><div></div>
+                  <div style={{ width: selectMode ? 28 : 4, flexShrink: 0 }} />
+                  <div className="row-name muted">(empty directory)</div><div></div><div></div>
                 </div>
               )}
               {entries.map((e) => {
@@ -633,7 +695,7 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
                       />
                     )}
                   </div>
-                  <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div className="row-name">
                     {e.type === LinuxFileType.Link ? "↪ " :
                      e.type === LinuxFileType.Directory ? "📁 " : "📄 "}
                     {e.name}

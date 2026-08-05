@@ -741,6 +741,7 @@ section.panel .panel-desc {
   font-family: var(--mono);
 }
 
+/* ── Generic row layout (form fields, lists) ──────────────────────────── */
 .row {
   display: flex;
   gap: 8px;
@@ -751,9 +752,15 @@ section.panel .panel-desc {
 .row > * {
   flex: 0 0 auto;
 }
-.row > *:first-child {
+/* Name column (2nd in file list, after the gutter/checkbox) should grow.
+   We intentionally do NOT target :first-child — the first child in our
+   file list is the 4px gutter / checkbox column, which must stay narrow. */
+.row > .row-name {
   flex: 1 1 auto;
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .field {
@@ -931,6 +938,21 @@ section.panel .panel-desc {
 .fm-breadcrumb-btn:hover {
   background: var(--border);
   color: var(--text);
+}
+
+/* Breadcrumb editing — text input appears on double-click */
+.fm-breadcrumb-input {
+  flex: 1;
+  min-width: 0;
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 3px 8px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  outline: none;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
 /* Upload button — right side of toolbar */
