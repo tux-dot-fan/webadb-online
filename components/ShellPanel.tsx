@@ -27,6 +27,8 @@ import { getAdbClient, type AdbClient } from "@/lib/adb-client";
 
 interface Props {
   session: AdbSession;
+  /** Shell command to run immediately after the PTY starts (e.g. "cd /sdcard"). */
+  initialCommand?: string;
 }
 
 interface TermHandle {
@@ -41,7 +43,7 @@ interface TermHandle {
   cleanup: () => void;
 }
 
-export function ShellPanel({ session }: Props) {
+export function ShellPanel({ session, initialCommand }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const handleRef = useRef<TermHandle | null>(null);
   // Bumping this key on the container <div> forces React to unmount +
@@ -194,6 +196,15 @@ export function ShellPanel({ session }: Props) {
       // Terminal → device pump. Reuse one writer across all onData
       // events (creating a fresh writer per keystroke would add latency).
       const writer = pty.input.getWriter();
+
+      // If an initialCommand was provided, send it after the shell prompt
+      // appears (~120ms delay lets the device render its prompt first).
+      if (initialCommand) {
+        setTimeout(() => {
+          const cmd = initialCommand + "\n";
+          writer.write(new TextEncoder().encode(cmd)).catch(() => {});
+        }, 120);
+      }
       const dataDisp = term.onData((data) => {
         writer.write(new TextEncoder().encode(data)).catch(() => {});
       });

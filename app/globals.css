@@ -11,6 +11,7 @@
   --text-dim: #5a657a;
   --accent: #2563eb;
   --accent-strong: #1d4ed8;
+  --accent-light: #eff6ff;
   --danger: #dc2626;
   --success: #15803d;
   --warning: #b45309;
@@ -35,6 +36,7 @@
   --text-dim: #98a3b8;
   --accent: #4ea1ff;
   --accent-strong: #6cb3ff;
+  --accent-light: #1a2a3a;
   --danger: #ff6b6b;
   --success: #51d88a;
   --warning: #ffb547;
@@ -763,6 +765,180 @@ section.panel .panel-desc {
 @keyframes blink {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.2; }
+}
+
+/* ── File Manager 2-column layout ──────────────────────────────────────── */
+.fm-two-col {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ── FM left sidebar (pinned paths) ────────────────────────────────────── */
+.fm-sidebar {
+  width: 180px;
+  min-width: 140px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--border);
+  padding: 10px 8px;
+  overflow-y: auto;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fm-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px 6px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+
+.fm-sidebar-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.fm-pin-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-dim);
+  padding: 0 2px;
+  border-radius: 4px;
+  transition: color 0.1s;
+}
+.fm-pin-btn:hover {
+  color: var(--accent);
+}
+
+.fm-pin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fm-pin-empty {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-align: center;
+  padding: 12px 4px;
+  margin: 0;
+}
+
+.fm-pin-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.fm-pin-path {
+  flex: 1;
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 6px;
+  border-radius: 6px;
+  text-align: left;
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  transition: background 0.1s;
+}
+.fm-pin-path:hover {
+  background: var(--bg-elev-2);
+}
+.fm-pin-path.active {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+
+.fm-pin-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.fm-pin-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.1s, color 0.1s;
+}
+.fm-pin-item:hover .fm-pin-remove {
+  opacity: 1;
+}
+.fm-pin-remove:hover {
+  color: var(--danger);
+}
+
+/* ── FM main area ───────────────────────────────────────────────────────── */
+.fm-main {
+  flex: 1;
+  overflow: auto;
+  min-width: 0;
+}
+
+/* ── Context menu ────────────────────────────────────────────────────────── */
+.ctx-menu {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+  padding: 4px;
+  min-width: 180px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.ctx-item {
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  width: 100%;
+  transition: background 0.1s;
+}
+.ctx-item:hover {
+  background: var(--bg-elev-2);
+}
+.ctx-item.danger {
+  color: var(--danger);
+}
+.ctx-item.danger:hover {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+.ctx-item[aria-hidden="true"] {
+  font-size: 14px;
+  width: auto;
+  padding: 0;
 }
 
 .muted {

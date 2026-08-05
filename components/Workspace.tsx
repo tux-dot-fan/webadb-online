@@ -81,21 +81,24 @@ export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
 
   const openWindow = useCallback((id: AppId) => {
     setOpen((prev) => new Set(prev).add(id));
-    setWindows((prev) => {
-      if (prev.has(id)) return prev;
-      // Cascade: offset new windows so they don't all start at (30,30)
-      const count = prev.size + 1;
-      const x = 30 + (count % 6) * 24;
-      const y = 30 + (count % 6) * 24;
-      const w: WinState = {
-        id, x, y,
-        width: DEFAULT_WIN_SIZE.width,
-        height: DEFAULT_WIN_SIZE.height,
-        zIndex: 0,
-        minimized: false,
-        maximized: false,
-      };
-      return new Map(prev).set(id, w);
+    setTopZ((z) => {
+      const next = z + 1;
+      setWindows((prev) => {
+        if (prev.has(id)) return prev;
+        const count = prev.size + 1;
+        const x = 30 + (count % 6) * 24;
+        const y = 30 + (count % 6) * 24;
+        const w: WinState = {
+          id, x, y,
+          width: DEFAULT_WIN_SIZE.width,
+          height: DEFAULT_WIN_SIZE.height,
+          zIndex: next,
+          minimized: false,
+          maximized: false,
+        };
+        return new Map(prev).set(id, w);
+      });
+      return next;
     });
   }, []);
 
@@ -260,6 +263,19 @@ export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
     return topId;
   })();
 
+  // Reset shellInitialCmd once consumed (after the window is added with the command)
+  const [shellInitialCmd, setShellInitialCmd] = useState<string | null>(null);
+  const [consumedCmd, setConsumedCmd] = useState(false);
+
+  // Open a shell window; optionally pre-run a command
+  const openShellWindow = useCallback((cmd?: string) => {
+    if (cmd) {
+      setShellInitialCmd(cmd);
+      setConsumedCmd(false);
+    }
+    openWindow("shell");
+  }, [openWindow]);
+
   return (
     <div className="app-shell">
       {/* ── Left sidebar ─────────────────────────────────────────────── */}
@@ -334,6 +350,8 @@ export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
                       });
                     }}
                     session={session}
+                    shellInitialCmd={shellInitialCmd}
+                    onOpenShell={openShellWindow}
                   />
                 );
               })}
@@ -388,12 +406,14 @@ interface DesktopWindowProps {
   onTitlebarMouseDown: (e: React.MouseEvent) => void;
   onResizeMouseDown: (e: React.MouseEvent) => void;
   session: ReturnType<typeof useAdbSession>;
+  shellInitialCmd?: string | null;
+  onOpenShell?: (path: string) => void;
 }
 
 function DesktopWindow({
   app, win, focused, dragging, resizing,
   onFocus, onClose, onMinimize, onMaximize,
-  onTitlebarMouseDown, onResizeMouseDown, session,
+  onTitlebarMouseDown, onResizeMouseDown, session, shellInitialCmd, onOpenShell,
 }: DesktopWindowProps) {
   if (!session) return null;
   if (win.minimized) return null;
@@ -466,10 +486,10 @@ function DesktopWindow({
 
       {/* Content */}
       <div className="window-content">
-        {app.id === "shell"       && <ShellPanel session={session} />}
+        {app.id === "shell"       && <ShellPanel session={session} initialCommand={shellInitialCmd ?? undefined} />}
         {app.id === "apps"        && <AppManagerPanel session={session} />}
         {app.id === "logcat"      && <LogcatPanel session={session} />}
-        {app.id === "files"       && <FileManagerPanel session={session} />}
+        {app.id === "files"       && <FileManagerPanel session={session} onOpenShell={onOpenShell} />}
         {app.id === "screenshot"  && <ScreenshotPanel session={session} />}
         {app.id === "apk"         && <ApkInstallPanel session={session} />}
         {app.id === "wifi"        && <WiFiAdbPanel session={session} />}
