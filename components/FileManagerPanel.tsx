@@ -21,6 +21,7 @@ interface Entry {
 // ── Pinned paths (localStorage) ─────────────────────────────────────────────
 
 const PINNED_STORAGE_KEY = "webadb.fmgr.pins";
+const SELECTED_STORAGE_KEY = "webadb.fmgr.selected"; // optional persistence
 
 function loadPins(): string[] {
   try {
@@ -200,6 +201,12 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
   const [pinned, setPinned] = useState<string[]>(loadPins);
   const [contextMenu, setContextMenu] = useState<ContextMenu | null>(null);
 
+  // ── Multi-select ─────────────────────────────────────────────────────────
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [lastSelected, setLastSelected] = useState<string | null>(null);
+
+  function clearSelection() { setSelected(new Set()); setLastSelected(null); }
+
   const list = useCallback(async (path: string) => {
     setBusy(true);
     setError(null);
@@ -220,6 +227,7 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
       });
       setEntries(out);
       setCwd(path);
+      clearSelection();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setEntries(null);
@@ -486,7 +494,32 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
           {/* ── File list ── */}
           {entries !== null && (
             <div className="file-list" style={{ marginTop: 6 }}>
+              {/* ── Selection action bar ── */}
+              {selected.size > 0 && (
+                <div className="fm-sel-bar">
+                  <span className="fm-sel-count">{selected.size} selected</span>
+                  <button className="fm-sel-btn" onClick={() => void navigator.clipboard.writeText([...selected].map((n) => `"${n}"`).join(" "))}>📋 Copy Names</button>
+                  <button className="fm-sel-btn" onClick={() => void navigator.clipboard.writeText(selected.has("..") ? "" : [...selected].map((n) => fullPath(cwd, n)).join("\n"))}>🔗 Copy Paths</button>
+                  <button className="fm-sel-btn danger" onClick={clearSelection}>✕ Clear</button>
+                </div>
+              )}
+
               <div className="row header">
+                <div style={{ width: 28, flexShrink: 0 }}>
+                  <input
+                    type="checkbox"
+                    aria-label="Select all"
+                    checked={entries.length > 0 && selected.size === entries.length}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        setSelected(new Set(entries.map((en) => en.name)));
+                        setLastSelected(entries.length > 0 ? entries[entries.length - 1].name : null);
+                      } else {
+                        clearSelection();
+                      }
+                    }}
+                  />
+                </div>
                 <div>Name</div>
                 <div>Size</div>
                 <div>Mode</div>
@@ -496,18 +529,62 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
                   <div className="muted">(empty directory)</div><div></div><div></div>
                 </div>
               )}
-              {entries.map((e) => (
+              {entries.map((e) => {
+                const isSelected = selected.has(e.name);
+                return (
                 <div
                   key={e.name}
-                  className="row clickable"
-                  onClick={() => ctxOpen(e)}
-                  onContextMenu={(ev) => handleContextMenu(ev, e)}
+                  className={`row clickable${isSelected ? " selected" : ""}`}
+                  onClick={(evt) => {
+                    if (evt.ctrlKey || evt.metaKey || evt.shiftKey) {
+                      // Toggle selection
+                      setSelected((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(e.name)) next.delete(e.name);
+                        else next.add(e.name);
+                        return next;
+                      });
+                      setLastSelected(e.name);
+                    } else if (isSelected) {
+                      // Already selected and clicking without modifier → open/preview
+                      ctxOpen(e);
+                    } else {
+                      // Clear selection and open
+                      clearSelection();
+                      ctxOpen(e);
+                    }
+                  }}
+                  onContextMenu={(ev) => {
+                    // Select the item before showing context menu
+                    if (!isSelected) {
+                      setSelected(new Set([e.name]));
+                      setLastSelected(e.name);
+                    }
+                    handleContextMenu(ev, e);
+                  }}
                   title={
                     e.type === LinuxFileType.Directory
-                      ? "Click to open · Right-click for more"
-                      : "Single-click to preview · Right-click for more"
+                      ? "Click to open · Ctrl/Cmd+click to select"
+                      : "Click to preview · Ctrl/Cmd+click to select"
                   }
                 >
+                  <div style={{ width: 28, flexShrink: 0 }}>
+                    <input
+                      type="checkbox"
+                      aria-label={`Select ${e.name}`}
+                      checked={isSelected}
+                      onChange={() => {
+                        setSelected((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(e.name)) next.delete(e.name);
+                          else next.add(e.name);
+                          return next;
+                        });
+                        setLastSelected(e.name);
+                      }}
+                      onClick={(evt) => evt.stopPropagation()}
+                    />
+                  </div>
                   <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {e.type === LinuxFileType.Link ? "↪ " :
                      e.type === LinuxFileType.Directory ? "📁 " : "📄 "}
@@ -518,7 +595,7 @@ export function FileManagerPanel({ session, onOpenShell }: Props) {
                   </div>
                   <div className="muted">{formatMode(e.mode)}</div>
                 </div>
-              ))}
+              );})}
             </div>
           )}
 

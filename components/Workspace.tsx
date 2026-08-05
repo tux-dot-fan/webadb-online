@@ -16,15 +16,17 @@ import {
 } from "@/lib/use-adb";
 import { ThemeToggle } from "@/components/ThemeToggle";
 
-type AppId = "shell" | "apps" | "logcat" | "files" | "screenshot" | "apk" | "wifi";
+// ── App registry ─────────────────────────────────────────────────────────────
 
-interface WindowDef {
-  id: AppId;
+type AppType = "shell" | "apps" | "logcat" | "files" | "screenshot" | "apk" | "wifi";
+
+interface AppDef {
+  id: AppType;
   title: string;
   icon: string;
 }
 
-const APPS: WindowDef[] = [
+const APPS: AppDef[] = [
   { id: "shell",       title: "Terminal",     icon: "🐚" },
   { id: "apps",        title: "Apps",          icon: "📱" },
   { id: "logcat",      title: "Logcat",        icon: "📋" },
@@ -34,10 +36,14 @@ const APPS: WindowDef[] = [
   { id: "wifi",        title: "Wi-Fi ADB",     icon: "📶" },
 ];
 
-// ── Window state stored in Workspace ───────────────────────────────────────
+// ── Window state ─────────────────────────────────────────────────────────────
+
+// Each window instance gets a unique string ID (e.g. "shell-2")
+type WindowId = string;
 
 interface WinState {
-  id: AppId;
+  id: WindowId;
+  appId: AppType;
   x: number;
   y: number;
   width: number;
@@ -50,10 +56,15 @@ interface WinState {
   _savedH?: number;
   _savedX?: number;
   _savedY?: number;
+  // Shell-only: initial command to run on PTY start
+  shellCmd?: string;
 }
 
 const DEFAULT_WIN_SIZE = { width: 640, height: 420 };
 const MIN_WIN_SIZE = { width: 320, height: 200 };
+const WIN_OFFSET = 24; // cascade offset per new window
+
+// ── Workspace ────────────────────────────────────────────────────────────────
 
 interface WorkspaceProps {
   buildVersion: string;
@@ -66,87 +77,165 @@ export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
   const session = useAdbSession();
   const supported = useAdbSupported();
 
-  // open window ids
-  const [open, setOpen] = useState<Set<AppId>>(new Set(["shell"]));
-  // per-window state
-  const [windows, setWindows] = useState<Map<AppId, WinState>>(() => {
-    const m = new Map<AppId, WinState>();
-    m.set("shell", { id: "shell", x: 30,  y: 30,  width: 640, height: 420, zIndex: 1, minimized: false, maximized: false });
+  // All open window instances (key = unique WindowId)
+  const [windows, setWindows] = useState<Map<WindowId, WinState>>(() => {
+    const m = new Map<WindowId, WinState>();
+    m.set("shell-1", {
+      id: "shell-1", appId: "shell",
+      x: 30, y: 30, width: 640, height: 420,
+      zIndex: 1, minimized: false, maximized: false,
+    });
     return m;
   });
-  // topmost zIndex counter
+
+  // Counter for generating unique window IDs (e.g. "shell-2", "shell-3")
+  const idCounterRef = useRef({ shell: 1 });
+
+  // Topmost zIndex counter
   const [topZ, setTopZ] = useState(1);
+
+  // Which app types are visible in the Dock "active" indicator
+  const [activeApps, setActiveApps] = useState<Set<AppType>>(new Set(["shell"]));
+
+  // ── Helpers ──────────────────────────────────────────────────────────────
+
+  function nextId(appId: AppType): WindowId {
+    const n = ++idCounterRef.current[appId as keyof typeof idCounterRef.current];
+    return `${appId}-${n}`;
+  }
 
   // ── Window lifecycle ─────────────────────────────────────────────────────
 
-  const openWindow = useCallback((id: AppId) => {
-    setOpen((prev) => new Set(prev).add(id));
+  const openWindow = useCallback((
+    appId: AppType,
+    opts?: { shellCmd?: string }
+  ) => {
+    setActiveApps((prev) => new Set(prev).add(appId));
+
     setTopZ((z) => {
       const next = z + 1;
+      const newId = nextId(appId);
+
       setWindows((prev) => {
-        if (prev.has(id)) return prev;
-        const count = prev.size + 1;
-        const x = 30 + (count % 6) * 24;
-        const y = 30 + (count % 6) * 24;
+        if (prev.has(newId)) return prev;
+        const count = prev.size;
+        const x = 30 + (count % 6) * WIN_OFFSET;
+        const y = 30 + (count % 6) * WIN_OFFSET;
         const w: WinState = {
-          id, x, y,
+          id: newId,
+          appId,
+          x, y,
           width: DEFAULT_WIN_SIZE.width,
           height: DEFAULT_WIN_SIZE.height,
           zIndex: next,
           minimized: false,
           maximized: false,
+          shellCmd: opts?.shellCmd,
         };
-        return new Map(prev).set(id, w);
+        return new Map(prev).set(newId, w);
       });
+
       return next;
     });
   }, []);
 
-  const closeWindow = useCallback((id: AppId) => {
-    setOpen((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
+  const closeWindow = useCallback((id: WindowId) => {
     setWindows((prev) => {
       const next = new Map(prev);
+      const win = next.get(id);
       next.delete(id);
+      // If no more windows of this app type remain, remove from activeApps
+      if (win && ![...next.values()].some((w) => w.appId === win.appId)) {
+        setActiveApps((active) => {
+          const next2 = new Set(active);
+          next2.delete(win.appId);
+          return next2;
+        });
+      }
       return next;
     });
   }, []);
 
-  const toggleMinimize = useCallback((id: AppId) => {
+  const toggleMinimize = useCallback((id: WindowId) => {
     setWindows((prev) => {
       const win = prev.get(id);
       if (!win) return prev;
-      const next = new Map(prev);
-      next.set(id, { ...win, minimized: !win.minimized });
-      return next;
+      return new Map(prev).set(id, { ...win, minimized: !win.minimized });
     });
   }, []);
 
-  // ── Layering ────────────────────────────────────────────────────────────
+  const toggleMaximizeWithSave = useCallback((id: WindowId) => {
+    setWindows((prev) => {
+      const win = prev.get(id);
+      if (!win) return prev;
+      if (win.maximized) {
+        // Restore saved geometry
+        const w: WinState = {
+          ...win,
+          maximized: false,
+          x: win._savedX ?? win.x,
+          y: win._savedY ?? win.y,
+          width: win._savedW ?? win.width,
+          height: win._savedH ?? win.height,
+        };
+        return new Map(prev).set(id, w);
+      } else {
+        // Save current geometry, then maximize to full desktop area
+        const w: WinState = {
+          ...win,
+          maximized: true,
+          _savedW: win.width,
+          _savedH: win.height,
+          _savedX: win.x,
+          _savedY: win.y,
+          // Fill the windows-layer (calc(100vh - header - dock))
+          x: 0, y: 0,
+          width: 100,
+          height: 100,
+        };
+        return new Map(prev).set(id, w);
+      }
+    });
+  }, []);
 
-  const bringToFront = useCallback((id: AppId) => {
+  // ── Layer / focus ─────────────────────────────────────────────────────────
+
+  const bringToFront = useCallback((id: WindowId) => {
     setTopZ((z) => {
       const next = z + 1;
       setWindows((prev) => {
         const win = prev.get(id);
         if (!win) return prev;
-        const nextMap = new Map(prev);
-        nextMap.set(id, { ...win, zIndex: next });
-        return nextMap;
+        return new Map(prev).set(id, { ...win, zIndex: next });
       });
       return next;
     });
   }, []);
 
-  // ── Drag (titlebar) ─────────────────────────────────────────────────────
+  // ── Drag state ───────────────────────────────────────────────────────────
 
-  const [drag, setDrag] = useState<{ id: AppId; startX: number; startY: number; startWinX: number; startWinY: number } | null>(null);
-  const [resize, setResize] = useState<{ id: AppId; startX: number; startY: number; startW: number; startH: number; startWinX: number; startWinY: number } | null>(null);
+  const [drag, setDrag] = useState<{
+    id: WindowId;
+    startX: number;
+    startY: number;
+    startWinX: number;
+    startWinY: number;
+  } | null>(null);
 
-  // Attach document-level listeners when dragging/resizing
+  // ── Resize state ─────────────────────────────────────────────────────────
+
+  const [resize, setResize] = useState<{
+    id: WindowId;
+    startX: number;
+    startY: number;
+    startW: number;
+    startH: number;
+    startWinX: number;
+    startWinY: number;
+  } | null>(null);
+
+  // ── Global mouse handlers ─────────────────────────────────────────────────
+
   useEffect(() => {
     if (!drag && !resize) return;
 
@@ -157,30 +246,26 @@ export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
         setWindows((prev) => {
           const win = prev.get(drag.id);
           if (!win) return prev;
-          const next = new Map(prev);
-          next.set(drag.id, {
+          return new Map(prev).set(drag.id, {
             ...win,
-            x: Math.max(0, drag.startWinX + dx),
-            y: Math.max(0, drag.startWinY + dy),
+            x: drag.startWinX + dx,
+            y: drag.startWinY + dy,
           });
-          return next;
         });
       }
       if (resize) {
-        const dw = e.clientX - resize.startX;
-        const dh = e.clientY - resize.startY;
+        const dx = e.clientX - resize.startX;
+        const dy = e.clientY - resize.startY;
         setWindows((prev) => {
           const win = prev.get(resize.id);
           if (!win) return prev;
-          const next = new Map(prev);
-          next.set(resize.id, {
+          return new Map(prev).set(resize.id, {
             ...win,
-            width: Math.max(MIN_WIN_SIZE.width, resize.startW + dw),
-            height: Math.max(MIN_WIN_SIZE.height, resize.startH + dh),
-            x: Math.max(0, resize.startWinX + (e.shiftKey ? dw : 0)),
-            y: Math.max(0, resize.startWinY + (e.shiftKey ? dh : 0)),
+            width: Math.max(MIN_WIN_SIZE.width,  resize.startW + dx),
+            height: Math.max(MIN_WIN_SIZE.height, resize.startH + dy),
+            x: resize.startWinX,
+            y: resize.startWinY,
           });
-          return next;
         });
       }
     };
@@ -190,72 +275,31 @@ export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
       setResize(null);
     };
 
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
     return () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
     };
   }, [drag, resize]);
 
-  // ── Maximize / restore ──────────────────────────────────────────────────
+  // ── Shell initial command state ───────────────────────────────────────────
 
-  const toggleMaximize = useCallback((id: AppId) => {
-    setWindows((prev) => {
-      const win = prev.get(id);
-      if (!win) return prev;
-      const next = new Map(prev);
-      next.set(id, {
-        ...win,
-        maximized: !win.maximized,
-        // Restore saved size when un-maximizing
-        width: win.maximized ? win._savedW ?? DEFAULT_WIN_SIZE.width : win.width,
-        height: win.maximized ? win._savedH ?? DEFAULT_WIN_SIZE.height : win.height,
-        x: win.maximized ? win._savedX ?? 30 : win.x,
-        y: win.maximized ? win._savedY ?? 30 : win.y,
-      });
-      return next;
-    });
-  }, []);
+  const [shellInitialCmd, setShellInitialCmd] = useState<string | null>(null);
 
-  // Maximize stores current dimensions so restore can come back
-  const toggleMaximizeWithSave = useCallback((id: AppId) => {
-    setWindows((prev) => {
-      const win = prev.get(id);
-      if (!win) return prev;
-      const next = new Map(prev);
-      if (win.maximized) {
-        // Restore
-        next.set(id, {
-          ...win,
-          maximized: false,
-          width: win._savedW ?? DEFAULT_WIN_SIZE.width,
-          height: win._savedH ?? DEFAULT_WIN_SIZE.height,
-          x: win._savedX ?? 30,
-          y: win._savedY ?? 30,
-        });
-      } else {
-        // Maximize — save current geometry first
-        next.set(id, {
-          ...win,
-          maximized: true,
-          _savedW: win.width,
-          _savedH: win.height,
-          _savedX: win.x,
-          _savedY: win.y,
-        });
-      }
-      return next;
-    });
-  }, []);
+  const openShellWindow = useCallback((cmd?: string) => {
+    if (cmd) setShellInitialCmd(cmd);
+    openWindow("shell", { shellCmd: cmd });
+  }, [openWindow]);
 
-  // ── Render ─────────────────────────────────────────────────────────────
+  // ── Render ───────────────────────────────────────────────────────────────
 
-  const focusedId = (() => {
+  // Topmost non-minimized window (for active dock indicator)
+  const topWinId = (() => {
     let top = 0;
-    let topId: AppId | null = null;
+    let topId: WindowId | null = null;
     windows.forEach((w, id) => {
-      if (open.has(id) && !w.minimized && w.zIndex >= top) {
+      if (!w.minimized && w.zIndex >= top) {
         top = w.zIndex;
         topId = id;
       }
@@ -263,139 +307,132 @@ export function Workspace({ buildVersion, buildGitHash }: WorkspaceProps) {
     return topId;
   })();
 
-  // Reset shellInitialCmd once consumed (after the window is added with the command)
-  const [shellInitialCmd, setShellInitialCmd] = useState<string | null>(null);
-  const [consumedCmd, setConsumedCmd] = useState(false);
-
-  // Open a shell window; optionally pre-run a command
-  const openShellWindow = useCallback((cmd?: string) => {
-    if (cmd) {
-      setShellInitialCmd(cmd);
-      setConsumedCmd(false);
-    }
-    openWindow("shell");
-  }, [openWindow]);
+  const topWin = topWinId ? windows.get(topWinId) : null;
 
   return (
     <div className="app-shell">
       {/* ── Left sidebar ─────────────────────────────────────────────── */}
       <aside className="sidebar">
         <div className="sidebar-brand">
-          <span className="logo" aria-hidden="true">
-            <svg viewBox="0 0 64 64" width="24" height="24" fill="currentColor" stroke="currentColor">
-              <line x1="22" y1="18" x2="18" y2="12" strokeWidth="2.5" strokeLinecap="round" />
-              <line x1="42" y1="18" x2="46" y2="12" strokeWidth="2.5" strokeLinecap="round" />
-              <path d="M 16 30 A 16 14 0 0 1 48 30 L 48 36 L 16 36 Z" />
-              <rect x="16" y="38" width="32" height="9" rx="2" />
-            </svg>
-          </span>
+          <span className="brand-icon">🧊</span>
           <span className="brand-name">WebADB</span>
-          <ThemeToggle />
         </div>
-
-        <DevicePanel state={state} session={session} supported={supported} />
-
+        <div className="sidebar-section">
+          <p className="sidebar-label">Device</p>
+          <DevicePanel state={state} session={session} supported={supported} />
+        </div>
         <div className="sidebar-footer">
-          <span title={`Git: ${buildGitHash}`}>v{buildVersion}</span>
+          <ThemeToggle />
+          <span className="ver">{buildVersion}</span>
         </div>
       </aside>
 
-      {/* ── Desktop ──────────────────────────────────────────────────── */}
+      {/* ── Desktop area ────────────────────────────────────────────── */}
       <div className="desktop-area">
-        {!session ? (
-          <DesktopNotConnected />
-        ) : (
-          <>
-            <div className="windows-layer">
-              {APPS.filter((a) => open.has(a.id)).map((app) => {
-                const win = windows.get(app.id);
-                if (!win) return null;
-                return (
-                  <DesktopWindow
-                    key={app.id}
-                    app={app}
-                    win={win}
-                    focused={focusedId === app.id}
-                    dragging={drag?.id === app.id}
-                    resizing={resize?.id === app.id}
-                    onFocus={() => bringToFront(app.id)}
-                    onClose={() => closeWindow(app.id)}
-                    onMinimize={() => toggleMinimize(app.id)}
-                    onMaximize={() => toggleMaximizeWithSave(app.id)}
-                    onTitlebarMouseDown={(e) => {
-                      if (win.maximized) return;
-                      e.preventDefault();
-                      bringToFront(app.id);
-                      setDrag({
-                        id: app.id,
-                        startX: e.clientX,
-                        startY: e.clientY,
-                        startWinX: win.x,
-                        startWinY: win.y,
-                      });
-                    }}
-                    onResizeMouseDown={(e) => {
-                      if (win.maximized) return;
-                      e.preventDefault();
-                      e.stopPropagation();
-                      bringToFront(app.id);
-                      setResize({
-                        id: app.id,
-                        startX: e.clientX,
-                        startY: e.clientY,
-                        startW: win.width,
-                        startH: win.height,
-                        startWinX: win.x,
-                        startWinY: win.y,
-                      });
-                    }}
-                    session={session}
-                    shellInitialCmd={shellInitialCmd}
-                    onOpenShell={openShellWindow}
-                  />
-                );
-              })}
-            </div>
-
-            <div className="dock" role="toolbar" aria-label="Applications">
-              {APPS.map((app) => (
-                <DockItem
-                  key={app.id}
-                  app={app}
-                  open={open.has(app.id)}
-                  minimized={windows.get(app.id)?.minimized ?? false}
-                  onClick={() => {
-                    if (!open.has(app.id)) {
-                      openWindow(app.id);
-                    } else {
-                      const w = windows.get(app.id);
-                      if (w?.minimized) {
-                        // Restore minimized window and bring to front
-                        toggleMinimize(app.id);
-                        bringToFront(app.id);
-                      } else if (focusedId !== app.id) {
-                        bringToFront(app.id);
-                      } else {
-                        // Already open and focused — minimize
-                        toggleMinimize(app.id);
-                      }
-                    }
-                  }}
-                />
-              ))}
-            </div>
-          </>
+        {/* Hero when nothing is open */}
+        {windows.size === 0 && (
+          <div className="hero">
+            <div className="hero-icon">🧊</div>
+            <h1 className="hero-title">WebADB</h1>
+            <p className="hero-desc">
+              Connect an Android device via USB and manage it directly from your browser.
+            </p>
+          </div>
         )}
+
+        {/* Windows layer */}
+        <div className="windows-layer">
+          {[...windows.values()].map((win) => {
+            const def = APPS.find((a) => a.id === win.appId)!;
+            const isTop = topWinId === win.id;
+            const isDragging = drag?.id === win.id;
+            const isResizing = resize?.id === win.id;
+
+            return (
+              <DesktopWindow
+                key={win.id}
+                win={win}
+                def={def}
+                focused={isTop}
+                dragging={isDragging}
+                resizing={isResizing}
+                onFocus={() => bringToFront(win.id)}
+                onClose={() => closeWindow(win.id)}
+                onMinimize={() => toggleMinimize(win.id)}
+                onMaximize={() => toggleMaximizeWithSave(win.id)}
+                onTitlebarMouseDown={(e) => {
+                  if (win.maximized) return;
+                  e.preventDefault();
+                  bringToFront(win.id);
+                  setDrag({
+                    id: win.id,
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    startWinX: win.x,
+                    startWinY: win.y,
+                  });
+                }}
+                onResizeMouseDown={(e) => {
+                  if (win.maximized) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  bringToFront(win.id);
+                  setResize({
+                    id: win.id,
+                    startX: e.clientX,
+                    startY: e.clientY,
+                    startW: win.width,
+                    startH: win.height,
+                    startWinX: win.x,
+                    startWinY: win.y,
+                  });
+                }}
+                session={session}
+                shellInitialCmd={shellInitialCmd}
+                onShellOpen={openShellWindow}
+              />
+            );
+          })}
+        </div>
       </div>
+
+      {/* ── Dock ─────────────────────────────────────────────────────── */}
+      <nav className="dock" role="navigation" aria-label="Applications">
+        {APPS.map((app) => {
+          const isActive = activeApps.has(app.id);
+          const isTopApp = topWin?.appId === app.id;
+          return (
+            <DockItem
+              key={app.id}
+              app={app}
+              active={isActive}
+              focused={isTopApp}
+              onClick={() => {
+                if (isActive) {
+                  // Already open — just bring all windows of this type to front
+                  bringToFront([...windows.entries()].find(([, w]) => w.appId === app.id)?.[0] ?? "");
+                } else {
+                  openWindow(app.id);
+                }
+              }}
+              onRightClick={(e) => {
+                e.preventDefault();
+                // Right click always opens a new window (even if already open)
+                openWindow(app.id);
+              }}
+            />
+          );
+        })}
+      </nav>
     </div>
   );
 }
 
-// ── DesktopWindow ───────────────────────────────────────────────────────────
+// ── DesktopWindow ─────────────────────────────────────────────────────────────
 
 interface DesktopWindowProps {
-  app: WindowDef;
-  win: WinState & { _savedW?: number; _savedH?: number; _savedX?: number; _savedY?: number };
+  win: WinState;
+  def: AppDef;
   focused: boolean;
   dragging: boolean;
   resizing: boolean;
@@ -407,92 +444,90 @@ interface DesktopWindowProps {
   onResizeMouseDown: (e: React.MouseEvent) => void;
   session: ReturnType<typeof useAdbSession>;
   shellInitialCmd?: string | null;
-  onOpenShell?: (path: string) => void;
+  onShellOpen?: (cmd?: string) => void;
 }
 
 function DesktopWindow({
-  app, win, focused, dragging, resizing,
+  win, def, focused, dragging, resizing,
   onFocus, onClose, onMinimize, onMaximize,
-  onTitlebarMouseDown, onResizeMouseDown, session, shellInitialCmd, onOpenShell,
+  onTitlebarMouseDown, onResizeMouseDown, session,
+  shellInitialCmd, onShellOpen,
 }: DesktopWindowProps) {
   if (!session) return null;
   if (win.minimized) return null;
 
   const isMaximized = win.maximized;
 
-  const winStyle: React.CSSProperties = isMaximized
-    ? {
-        position: "absolute",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        width: "100%",
-        height: "100%",
-        zIndex: win.zIndex,
-        borderRadius: 0,
-      }
-    : {
-        position: "absolute",
-        top: win.y,
-        left: win.x,
-        width: win.width,
-        height: win.height,
-        zIndex: win.zIndex,
-      };
+  // Determine % or px sizing
+  const style: React.CSSProperties = isMaximized
+    ? { top: 0, left: 0, width: "100%", height: "100%", zIndex: win.zIndex }
+    : { top: win.y, left: win.x, width: win.width, height: win.height, zIndex: win.zIndex };
 
   return (
     <div
-      className={`desktop-window ${focused ? "focused" : ""} ${isMaximized ? "maximized" : ""} ${dragging ? "dragging" : ""} ${resizing ? "resizing" : ""}`}
-      style={winStyle}
+      className={[
+        "desktop-window",
+        focused ? "focused" : "",
+        dragging ? "dragging" : "",
+        resizing ? "resizing" : "",
+        isMaximized ? "maximized" : "",
+      ].join(" ")}
+      style={style}
       onMouseDown={onFocus}
     >
-      {/* Title bar */}
+      {/* ── Title bar ─────────────────────────────────────────────── */}
       <div
-        className="window-titlebar"
+        className="window-header"
         onMouseDown={onTitlebarMouseDown}
         onDoubleClick={onMaximize}
-        title={isMaximized ? undefined : "Drag to move · Double-click to maximize"}
       >
-        <span className="window-title-icon" aria-hidden="true">{app.icon}</span>
-        <span className="window-title-text">{app.title}</span>
-        <div className="window-controls" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="window-title">
+          <span className="window-title-icon">{def.icon}</span>
+          <span className="window-title-text">{def.title}</span>
+        </div>
+        <div className="window-controls">
           <button
-            className="window-ctrl"
-            onClick={onMinimize}
+            className="window-ctrl window-ctrl-minimize"
+            onClick={(e) => { e.stopPropagation(); onMinimize(); }}
             title="Minimize"
-            aria-label={`Minimize ${app.title}`}
+            aria-label="Minimize window"
           >
-            <span aria-hidden="true">─</span>
+            <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor"/></svg>
           </button>
           <button
-            className="window-ctrl"
-            onClick={onMaximize}
+            className="window-ctrl window-ctrl-maximize"
+            onClick={(e) => { e.stopPropagation(); onMaximize(); }}
             title={isMaximized ? "Restore" : "Maximize"}
-            aria-label={isMaximized ? `Restore ${app.title}` : `Maximize ${app.title}`}
+            aria-label={isMaximized ? "Restore window" : "Maximize window"}
           >
-            <span aria-hidden="true">{isMaximized ? "❐" : "□"}</span>
+            {isMaximized
+              ? <svg width="10" height="10" viewBox="0 0 10 10"><rect x="2" y="0" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1"/><rect x="0" y="2" width="8" height="8" fill="var(--bg-elev)" stroke="currentColor" strokeWidth="1"/></svg>
+              : <svg width="10" height="10" viewBox="0 0 10 10"><rect width="10" height="10" fill="none" stroke="currentColor" strokeWidth="1"/></svg>
+            }
           </button>
           <button
             className="window-ctrl window-ctrl-close"
-            onClick={onClose}
+            onClick={(e) => { e.stopPropagation(); onClose(); }}
             title="Close"
-            aria-label={`Close ${app.title}`}
+            aria-label="Close window"
           >
-            <span aria-hidden="true">✕</span>
+            <svg width="10" height="10" viewBox="0 0 10 10">
+              <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.2"/>
+              <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.2"/>
+            </svg>
           </button>
         </div>
       </div>
 
       {/* Content */}
       <div className="window-content">
-        {app.id === "shell"       && <ShellPanel session={session} initialCommand={shellInitialCmd ?? undefined} />}
-        {app.id === "apps"        && <AppManagerPanel session={session} />}
-        {app.id === "logcat"      && <LogcatPanel session={session} />}
-        {app.id === "files"       && <FileManagerPanel session={session} onOpenShell={onOpenShell} />}
-        {app.id === "screenshot"  && <ScreenshotPanel session={session} />}
-        {app.id === "apk"         && <ApkInstallPanel session={session} />}
-        {app.id === "wifi"        && <WiFiAdbPanel session={session} />}
+        {win.appId === "shell"       && <ShellPanel session={session} initialCommand={win.shellCmd ?? shellInitialCmd ?? undefined} />}
+        {win.appId === "apps"        && <AppManagerPanel session={session} />}
+        {win.appId === "logcat"      && <LogcatPanel session={session} />}
+        {win.appId === "files"       && <FileManagerPanel session={session} onOpenShell={onShellOpen} />}
+        {win.appId === "screenshot"  && <ScreenshotPanel session={session} />}
+        {win.appId === "apk"         && <ApkInstallPanel session={session} />}
+        {win.appId === "wifi"        && <WiFiAdbPanel session={session} />}
       </div>
 
       {/* Resize handle (bottom-right corner) */}
@@ -508,65 +543,79 @@ function DesktopWindow({
   );
 }
 
-// ── Dock ────────────────────────────────────────────────────────────────────
+// ── Dock ─────────────────────────────────────────────────────────────────────
 
 interface DockItemProps {
-  app: WindowDef;
-  open: boolean;
-  minimized: boolean;
+  app: AppDef;
+  active: boolean;
+  focused: boolean;
   onClick: () => void;
+  onRightClick: (e: React.MouseEvent) => void;
 }
 
-function DockItem({ app, open, minimized, onClick }: DockItemProps) {
-  return (
-    <button
-      className={`dock-item ${open ? "open" : ""} ${minimized ? "minimized" : ""}`}
-      onClick={onClick}
-      title={app.title}
-      aria-label={app.title}
-      aria-pressed={open}
-    >
-      <span className="dock-icon" aria-hidden="true">{app.icon}</span>
-      <span className="dock-label">{app.title}</span>
-      {open && <span className="dock-dot" aria-hidden="true" />}
-    </button>
-  );
-}
+function DockItem({ app, active, focused, onClick, onRightClick }: DockItemProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState({ x: 0, y: 0 });
+  const menuRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
 
-// ── Not-connected ────────────────────────────────────────────────────────────
+  // Close menu on outside click
+  useEffect(() => {
+    if (!menuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [menuOpen]);
 
-function DesktopNotConnected() {
+  function handleContextMenu(e: React.MouseEvent) {
+    e.preventDefault();
+    // Position menu just above the dock item
+    const rect = btnRef.current?.getBoundingClientRect();
+    setMenuPos({ x: rect ? rect.left : e.clientX, y: rect ? rect.top - 8 : e.clientY - 48 });
+    setMenuOpen(true);
+  }
+
   return (
-    <div className="desktop-notconnected">
-      <div className="hero">
-        <h1>Run ADB fully in your browser</h1>
-        <p>
-          Connect your Android device over USB, then run shell commands, install APKs,
-          browse files, and take screenshots — without installing anything on your computer.
-        </p>
-      </div>
-      <div className="feature-grid">
-        <div className="card">
-          <h3>🔌 WebUSB</h3>
-          <p>Direct USB from your browser. No drivers, no adb-server. Just Chrome, Edge, or Opera.</p>
+    <div className="dock-item-wrap" ref={menuRef}>
+      <button
+        className={[
+          "dock-item",
+          active ? "active" : "",
+          focused ? "focused" : "",
+        ].join(" ")}
+        ref={btnRef}
+        onClick={onClick}
+        onContextMenu={handleContextMenu}
+        title={`${app.title}\nRight-click for New Window`}
+        aria-label={`Open ${app.title}`}
+      >
+        <span className="dock-icon">{app.icon}</span>
+        {active && <span className="dock-dot" />}
+      </button>
+
+      {/* Right-click menu */}
+      {menuOpen && (
+        <div
+          className="dock-ctx-menu"
+          style={{ left: menuPos.x, top: menuPos.y }}
+          role="menu"
+        >
+          <button
+            className="dock-ctx-item"
+            onClick={() => {
+              onRightClick({ preventDefault: () => {} } as React.MouseEvent);
+              setMenuOpen(false);
+            }}
+            role="menuitem"
+          >
+            🪟 New Window
+          </button>
         </div>
-        <div className="card">
-          <h3>🐚 Terminal</h3>
-          <p>Full PTY terminal with arrow keys, Ctrl+C, and Tab completion.</p>
-        </div>
-        <div className="card">
-          <h3>📁 File Manager</h3>
-          <p>Browse <code>/sdcard</code>, preview text/images/audio/video, download files.</p>
-        </div>
-        <div className="card">
-          <h3>📸 Screenshot</h3>
-          <p>One-click <code>screencap</code> — no scrcpy server needed.</p>
-        </div>
-        <div className="card">
-          <h3>🔒 Private</h3>
-          <p>Everything runs in your browser. No data leaves your computer.</p>
-        </div>
-      </div>
+      )}
     </div>
   );
 }

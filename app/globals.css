@@ -404,6 +404,39 @@ pre {
   display: none; /* Title shown in window titlebar instead */
 }
 
+/* ── Dock context menu ───────────────────────────────────────────────────── */
+.dock-ctx-menu {
+  position: fixed;
+  z-index: 9999;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28);
+  padding: 4px;
+  min-width: 140px;
+  transform: translateY(-100%);
+}
+
+.dock-ctx-item {
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  width: 100%;
+  transition: background 0.1s;
+}
+.dock-ctx-item:hover {
+  background: var(--bg-elev-2);
+}
+
+
 /* ── Dock ─────────────────────────────────────────────────────────────── */
 .dock {
   display: flex;
@@ -632,12 +665,57 @@ section.panel .panel-desc {
   background: var(--bg-elev-2);
   color: var(--text-dim);
   font-weight: 600;
+  padding-left: 8px;
 }
 .file-list .row.clickable {
   cursor: pointer;
 }
 .file-list .row.clickable:hover {
   background: var(--bg-elev-2);
+}
+.file-list .row.selected {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.file-list .row.selected:hover {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* ── Selection action bar ──────────────────────────────────────────────── */
+.fm-sel-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elev));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.fm-sel-count {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent);
+  margin-right: 4px;
+}
+.fm-sel-btn {
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+  transition: background 0.1s;
+}
+.fm-sel-btn:hover {
+  background: var(--bg-elev);
+}
+.fm-sel-btn.danger {
+  color: var(--danger);
+}
+.fm-sel-btn.danger:hover {
+  background: color-mix(in srgb, var(--danger) 10%, var(--bg-elev));
 }
 
 /* ── File Manager toolbar ──────────────────────────────────────────────── */
