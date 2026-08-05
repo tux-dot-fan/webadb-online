@@ -16,7 +16,6 @@ interface Entry {
   type: LinuxFileType;
 }
 
-/** Entries that are safe to attempt as inline preview */
 const PREVIEWABLE_TEXT = [
   ".txt", ".log", ".json", ".xml", ".html", ".htm",
   ".css", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".c", ".cpp",
@@ -33,6 +32,15 @@ const PREVIEWABLE_VIDEO = [
   ".mp4", ".mkv", ".webm", ".avi", ".mov", ".3gp", ".flv", ".wmv",
   ".m4v",
 ];
+const PREVIEWABLE_AUDIO = [
+  ".mp3", ".ogg", ".opus", ".wav", ".flac", ".aac", ".m4a", ".wma",
+  ".ape", ".ac3",
+];
+
+/** Build a list of path segments for the breadcrumb, e.g. ["/", "sdcard", "DCIM"] */
+function pathSegments(p: string): string[] {
+  return ["/", ...p.split("/").filter(Boolean)];
+}
 
 export function FileManagerPanel({ session }: Props) {
   const [cwd, setCwd] = useState("/sdcard");
@@ -44,7 +52,7 @@ export function FileManagerPanel({ session }: Props) {
   const [preview, setPreview] = useState<{
     url: string;
     name: string;
-    kind: "text" | "image" | "video" | "binary";
+    kind: "text" | "image" | "video" | "audio" | "binary";
     content?: string;
   } | null>(null);
 
@@ -87,7 +95,6 @@ export function FileManagerPanel({ session }: Props) {
       const stream = session.adb.sync.read(remote) as unknown as ReadableStream<Uint8Array>;
 
       if (PREVIEWABLE_TEXT.includes(ext)) {
-        // Text — read up to 512 KB inline
         if (entry.size > 512 * 1024) {
           setError(`Text file too large (${formatSize(entry.size)}). Download it to view.`);
           return;
@@ -111,8 +118,15 @@ export function FileManagerPanel({ session }: Props) {
         const blob = await streamToBlob(stream);
         const url = URL.createObjectURL(blob);
         setPreview({ url, name: entry.name, kind: "video" });
+      } else if (PREVIEWABLE_AUDIO.includes(ext)) {
+        if (entry.size > 100 * 1024 * 1024) {
+          setError(`Audio too large (${formatSize(entry.size)}). Download it to listen.`);
+          return;
+        }
+        const blob = await streamToBlob(stream);
+        const url = URL.createObjectURL(blob);
+        setPreview({ url, name: entry.name, kind: "audio" });
       } else {
-        // Binary / unknown — offer download
         setPreview({ url: "", name: entry.name, kind: "binary" });
       }
     } catch (e) {
@@ -180,71 +194,94 @@ export function FileManagerPanel({ session }: Props) {
     }
   }
 
+  const segments = pathSegments(cwd);
+
   return (
     <section className="panel">
-      <h2>File Manager</h2>
-      <p className="panel-desc">
-        Browse files and folders on your device. Click a file to preview
-        (text, image, video), or double-click to download.
-      </p>
+      <h2 style={{ marginBottom: 12 }}>File Manager</h2>
 
-      <div className="row" style={{ marginBottom: 10 }}>
-        <input
-          className="mono"
-          value={cwd}
-          onChange={(e) => setCwd(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") void list(cwd);
-          }}
-          style={{ flex: 1, minWidth: 200 }}
-        />
-        <button onClick={() => void list(cwd)} disabled={busy} className="primary">
-          {busy ? "Reading…" : "Go"}
-        </button>
-        {cwd !== "/" && (
-          <button onClick={() => void list(parent())} disabled={busy}>
-            Up
+      {/* ── Toolbar ── */}
+      <div className="fm-toolbar">
+        {/* Left cluster: navigation */}
+        <div className="fm-toolbar-nav">
+          <button
+            className="fm-icon-btn"
+            onClick={() => void list(parent())}
+            disabled={busy || cwd === "/"}
+            title="Parent folder"
+            aria-label="Go to parent folder"
+          >
+            ▲
           </button>
-        )}
-        <button onClick={() => void list(cwd)} disabled={busy} title="Refresh">
-          ⟳
-        </button>
-        <label
-          style={{
-            display: "inline-block",
-            cursor: uploading ? "not-allowed" : "pointer",
-            opacity: uploading ? 0.6 : 1,
-            padding: "8px 14px",
-            borderRadius: 6,
-            background: "var(--bg-elev-2)",
-            border: "1px solid var(--border)",
-            fontSize: 14,
-          }}
-        >
-          {uploading ? "Uploading…" : "Upload"}
-          <input
-            type="file"
-            onChange={(e) => void onUpload(e)}
-            disabled={uploading}
-            style={{ display: "none" }}
-          />
-        </label>
+          <button
+            className="fm-icon-btn"
+            onClick={() => void list(cwd)}
+            disabled={busy}
+            title="Refresh"
+            aria-label="Refresh"
+          >
+            ↺
+          </button>
+        </div>
+
+        {/* Breadcrumb */}
+        <div className="fm-breadcrumb" role="navigation" aria-label="Path">
+          {segments.map((seg, i) => (
+            <span key={i} className="fm-breadcrumb-item">
+              {i > 0 && <span className="fm-breadcrumb-sep">/</span>}
+              <button
+                className="fm-breadcrumb-btn"
+                onClick={() => {
+                  const target = seg === "/"
+                    ? "/"
+                    : "/" + segments.slice(1, i + 1).join("/");
+                  void list(target);
+                }}
+                title={seg === "/" ? "Root" : seg}
+              >
+                {seg === "/" ? "📁" : seg}
+              </button>
+            </span>
+          ))}
+        </div>
+
+        {/* Right cluster: upload */}
+        <div className="fm-toolbar-right">
+          <label
+            className="fm-upload-btn"
+            title={uploading ? "Uploading…" : "Upload file here"}
+            aria-label="Upload file"
+          >
+            {uploading ? (
+              <span className="fm-uploading-dot">⬤</span>
+            ) : (
+              <span>⬆ Upload</span>
+            )}
+            <input
+              type="file"
+              onChange={(e) => void onUpload(e)}
+              disabled={uploading}
+              style={{ display: "none" }}
+            />
+          </label>
+        </div>
       </div>
 
+      {/* Status messages */}
       {uploadStatus && (
-        <div className="banner info" style={{ margin: "0 0 12px" }}>
+        <div className="banner info" style={{ margin: "10px 0 0" }}>
           {uploadStatus}
         </div>
       )}
-
       {error && (
-        <div className="banner error" style={{ margin: "0 0 12px" }}>
+        <div className="banner error" style={{ margin: "10px 0 0" }}>
           {error}
         </div>
       )}
 
+      {/* File list */}
       {entries !== null && (
-        <div className="file-list">
+        <div className="file-list" style={{ marginTop: 8 }}>
           <div className="row header">
             <div>Name</div>
             <div>Size</div>
@@ -260,7 +297,7 @@ export function FileManagerPanel({ session }: Props) {
           {entries.map((e) => (
             <div
               key={e.name}
-              className={`row ${e.type === LinuxFileType.Directory ? "clickable" : "clickable"}`}
+              className="row clickable"
               onClick={() => {
                 if (e.type === LinuxFileType.Directory) {
                   void list(`${cwd === "/" ? "" : cwd}/${e.name}`);
@@ -294,8 +331,7 @@ export function FileManagerPanel({ session }: Props) {
 
       {entries === null && !error && !busy && (
         <div className="muted" style={{ padding: "12px 0" }}>
-          Press <span className="kbd">Go</span> or hit{" "}
-          <span className="kbd">Enter</span> to list <code>{cwd}</code>.
+          Navigate to a folder to browse its contents.
         </div>
       )}
 
@@ -353,14 +389,21 @@ export function FileManagerPanel({ session }: Props) {
                 {preview.name}
               </span>
               <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                {preview.kind !== "text" && (
-                  <button
-                    onClick={() => void download({ name: preview.name, type: LinuxFileType.File, mode: 0, size: 0, mtime: 0 } as Entry)}
-                    style={{ padding: "4px 12px", fontSize: 13 }}
-                  >
-                    Download
-                  </button>
-                )}
+                <button
+                  onClick={() =>
+                    void download({
+                      name: preview.name,
+                      type: LinuxFileType.File,
+                      mode: 0,
+                      size: 0,
+                      mtime: 0,
+                    } as Entry)
+                  }
+                  className="primary"
+                  style={{ padding: "4px 14px", fontSize: 13 }}
+                >
+                  ⬇ Download
+                </button>
                 <button
                   onClick={closePreview}
                   style={{ padding: "4px 10px", fontSize: 13 }}
@@ -429,6 +472,28 @@ export function FileManagerPanel({ session }: Props) {
                   Your browser does not support this video format.
                 </video>
               )}
+              {preview.kind === "audio" && preview.url && (
+                <div style={{ textAlign: "center", padding: "24px 16px" }}>
+                  <div style={{ fontSize: 48, marginBottom: 16 }}>🎵</div>
+                  <p
+                    style={{
+                      color: "var(--text-dim)",
+                      margin: "0 0 16px",
+                      fontSize: 14,
+                    }}
+                  >
+                    {preview.name}
+                  </p>
+                  <audio
+                    controls
+                    autoPlay
+                    src={preview.url}
+                    style={{ width: "100%", maxWidth: 480 }}
+                  >
+                    Your browser does not support audio playback.
+                  </audio>
+                </div>
+              )}
               {preview.kind === "binary" && (
                 <div
                   style={{
@@ -453,7 +518,7 @@ export function FileManagerPanel({ session }: Props) {
                     }
                     className="primary"
                   >
-                    Download
+                    ⬇ Download
                   </button>
                 </div>
               )}

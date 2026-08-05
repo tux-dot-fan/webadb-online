@@ -68,49 +68,91 @@ export function ShellPanel({ session }: Props) {
         import("@xterm/addon-fit"),
       ]);
 
-      // Terminal font: JetBrains Mono is legible at small sizes, has good
-      // distinction between 0/O and 1/l/I, and includes box-drawing chars.
-      // CJK users may prefer a system CJK monospace — let the OS pick.
-      const fontFamily =
-        '"JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace';
+      // Terminal palette adapts to the page theme so text is always legible.
+      // Light page bg = light terminal; dark page bg = dark terminal.
+      // We read the current value at setup and watch for flips via
+      // MutationObserver so the terminal updates if the user toggles theme.
+      function getPageTheme(): "light" | "dark" {
+        return (document.documentElement.getAttribute("data-theme") as "light" | "dark") ?? "light";
+      }
+
+      const LIGHT_THEME = {
+        background: "#ffffff",
+        foreground: "#1c2433",
+        cursor: "#1c2433",
+        selectionBackground: "rgba(37, 99, 235, 0.2)",
+        black: "#1c2433",
+        red: "#dc2626",
+        green: "#15803d",
+        yellow: "#b45309",
+        blue: "#2563eb",
+        magenta: "#7c3aed",
+        cyan: "#0891b2",
+        white: "#e6ebf5",
+        brightBlack: "#5a657a",
+        brightRed: "#ef4444",
+        brightGreen: "#22c55e",
+        brightYellow: "#f59e0b",
+        brightBlue: "#3b82f6",
+        brightMagenta: "#8b5cf6",
+        brightCyan: "#06b6d4",
+        brightWhite: "#ffffff",
+      };
+
+      const DARK_THEME = {
+        background: "#0d1117",
+        foreground: "#e6edf3",
+        cursor: "#e6edf3",
+        selectionBackground: "rgba(78, 161, 255, 0.25)",
+        black: "#0d1117",
+        red: "#ff7b72",
+        green: "#3fb950",
+        yellow: "#d29922",
+        blue: "#58a6ff",
+        magenta: "#bc8cff",
+        cyan: "#39c5cf",
+        white: "#e6edf3",
+        brightBlack: "#484f58",
+        brightRed: "#ffa198",
+        brightGreen: "#56d364",
+        brightYellow: "#e3b341",
+        brightBlue: "#79c0ff",
+        brightMagenta: "#d2a8ff",
+        brightCyan: "#56d4dd",
+        brightWhite: "#ffffff",
+      };
 
       const term = new Terminal({
         fontSize: 14,
-        fontFamily,
+        fontFamily:
+          '"JetBrains Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace',
         fontWeight: "400",
         fontWeightBold: "700",
         cursorBlink: true,
         cursorStyle: "block",
-        // Dark background — no conflict with light/dark page theme. The
-        // terminal always stays dark so white/green text pops clearly.
-        theme: {
-          background: "#0d1117",
-          foreground: "#e6edf3",
-          cursor: "#e6edf3",
-          // Selection / highlight
-          selectionBackground: "rgba(78, 161, 255, 0.25)",
-          // ANSI 16-color palette — GitHub Dark palette (familiar to devs,
-          // high contrast on dark background, not garish neon).
-          black: "#0d1117",
-          red: "#ff7b72",
-          green: "#3fb950",
-          yellow: "#d29922",
-          blue: "#58a6ff",
-          magenta: "#bc8cff",
-          cyan: "#39c5cf",
-          white: "#e6edf3",
-          brightBlack: "#484f58",
-          brightRed: "#ffa198",
-          brightGreen: "#56d364",
-          brightYellow: "#e3b341",
-          brightBlue: "#79c0ff",
-          brightMagenta: "#d2a8ff",
-          brightCyan: "#56d4dd",
-          brightWhite: "#ffffff",
-        },
+        theme: getPageTheme() === "dark" ? DARK_THEME : LIGHT_THEME,
         scrollback: 10_000,
         allowTransparency: false,
         convertEol: true,
+      });
+
+      // Keep the container bg in sync with the terminal bg, so there's no
+      // flash when the theme toggles while the panel is open.
+      const containerBg =
+        getPageTheme() === "dark" ? "#0d1117" : "#ffffff";
+      containerRef.current!.style.background = containerBg;
+
+      const themeObserver = new MutationObserver(() => {
+        const next = getPageTheme() === "dark" ? DARK_THEME : LIGHT_THEME;
+        term.options.theme = next;
+        if (containerRef.current) {
+          containerRef.current.style.background =
+            getPageTheme() === "dark" ? "#0d1117" : "#ffffff";
+        }
+      });
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
@@ -171,6 +213,7 @@ export function ShellPanel({ session }: Props) {
 
       const cleanup = () => {
         ro.disconnect();
+        themeObserver.disconnect();
         dataDisp.dispose();
         try {
           pty.kill();
