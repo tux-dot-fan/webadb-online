@@ -789,11 +789,18 @@ export interface PackageInfo {
 function parsePackageList(text: string): PackageInfo[] {
   const out: PackageInfo[] = [];
   for (const line of text.split("\n")) {
-    const m = line.match(/^(?:package:)?(\S+)\s+(\S+)/);
-    if (!m) continue;
-    const apkPath = m[1];
-    const packageName = m[2];
-    if (!packageName.includes(".")) continue; // sanity check
+    // `pm list packages -f` emits one entry per line:
+    //   package:/path/to/base.apk=com.example.app
+    // Older devices / Android versions omit the `package:` prefix, but
+    // the `=` separator is universal. Split on `=` so we don't depend on
+    // the prefix (or on whitespace, which never appears in this output
+    // and is what the previous regex assumed — bug: every line failed to
+    // match, so the app list came back empty).
+    const idx = line.lastIndexOf("=");
+    if (idx < 0) continue;
+    const apkPath = line.slice(0, idx).replace(/^package:/, "").trim();
+    const packageName = line.slice(idx + 1).trim();
+    if (!apkPath || !packageName.includes(".")) continue; // sanity check
     out.push({ packageName, apkPath });
   }
   return out;
@@ -810,21 +817,33 @@ function parsePackageList(text: string): PackageInfo[] {
 async function spawnText(adb: Adb, command: readonly string[]): Promise<string> {
   const shell = adb.subprocess.shellProtocol;
   if (shell && shell.isSupported) {
-    // `shell.spawn(...)` returns a lazy promise that's also a `Wait` helper:
-    //   - `await proc` → AdbShellProtocolProcess (with stdio streams)
-    //   - `proc.wait()` → { stdout, stderr, exitCode } | string-via-.toString()
-    // We want the wait helper to collect everything and decode the buffers.
+    // `shell.spawn(...)` returns a lazy `Promise<AdbShellProtocolProcess>`
+    // that also implements `Wait<WaitResult<Uint8Array>, WaitResult<string>>`.
+    // That means we have TWO ways to get the result:
+    //   • `await procPromise.wait()`            → `WaitResult<Uint8Array>`
+    //                                              (raw bytes; `result.stdout` is a Uint8Array)
+    //   • `await procPromise.wait().toString()` → `WaitResult<string>`
+    //                                              (decoded UTF-8; `result.stdout` is a string)
+    //
+    // Calling `.toString()` directly on `result.stdout` (a Uint8Array) is
+    // a footgun: `Uint8Array.prototype.toString()` returns a comma-separated
+    // list of byte values, not the bytes interpreted as text. Every parser
+    // downstream (parseProcStat, parseMeminfo, parsePackageList, …) would
+    // then see garbage like "112,97,99,107,97,103,101,58,..." and return
+    // empty results — which is why the AppManager and SystemMonitor panels
+    // came up empty even on a real device.
+    //
+    // The fix is to ask the spawner to give us the *decoded* form by
+    // calling `.toString()` on the lazy promise (not on the Uint8Array).
     const procPromise = shell.spawn(command);
-    const result = await procPromise.wait();
-    const stdout = await result.stdout.toString();
+    const result = await procPromise.wait().toString();
     if (result.exitCode !== 0) {
-      const stderr = await result.stderr.toString();
       throw new Error(
         `Command failed (exit ${result.exitCode}): ${command.join(" ")}\n` +
-          (stderr || stdout),
+          (result.stderr || result.stdout),
       );
     }
-    return stdout;
+    return result.stdout;
   }
   // Fallback: none-protocol has no `wait()` helper, so we accumulate
   // output manually.
