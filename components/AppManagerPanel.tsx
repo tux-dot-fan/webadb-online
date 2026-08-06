@@ -36,22 +36,43 @@ type FilterMode = "all" | "system" | "user" | "disabled";
 type SortMode = "label" | "size" | "install";
 
 /**
- * A package is "system" iff its APK lives under /system/app/ or
- * /system/priv-app/. Everything else — /data/app/ (user installs),
- * /system_ext/, /vendor/, /product/, /oem/, etc. — is third-party.
+ * A package is "system" iff its APK lives on a read-only system volume.
+ * The list mirrors Android's `PackageParser.parsePackageSplitName` and the
+ * system volume set defined in
+ * `frameworks/base/core/java/android/os/Environment.java` /
+ * `core/java/android/content/pm/PackageManagerService.java`:
  *
- * This is Android's authoritative partition layout (AOSP frameworks/base
- * PackageManagerService.getPackageInfo): only /system/app and
- * /system/priv-app are read-only system images. Other paths are user-writable
- * or product-specific and behave like user apps for our purposes (disable /
- * uninstall UI controls).
+ *   • /system/app/, /system/priv-app/         (AOSP read-only image)
+ *   • /system_ext/app/, /system_ext/priv-app/ (system extension, e.g. GMS)
+ *   • /vendor/app/, /vendor/priv-app/         (SoC vendor, e.g. Qualcomm)
+ *   • /product/app/, /product/priv-app/       (OEM product image, e.g. MIUI)
+ *   • /oem/app/, /oem/priv-app/               (OEM-specific, optional)
+ *
+ * Everything else — `/data/app/` (user installs), `/data/user_de/0/...`,
+ * manually sideloaded paths, etc. — is third-party.
  *
  * We deliberately DO NOT trust dumpsys `System app:` / `Flags=` markers —
- * those are absent or wrong on many OEM ROMs (MIUI/HyperOS, ColorOS, etc.),
- * which caused every package to be classified as third-party.
+ * those are absent or wrong on many OEM ROMs (MIUI/HyperOS, ColorOS, OneUI),
+ * which caused every package to be misclassified as third-party.
  */
+const SYSTEM_PATH_PREFIXES: readonly string[] = [
+  "/system/app/",
+  "/system/priv-app/",
+  "/system_ext/app/",
+  "/system_ext/priv-app/",
+  "/vendor/app/",
+  "/vendor/priv-app/",
+  "/product/app/",
+  "/product/priv-app/",
+  "/oem/app/",
+  "/oem/priv-app/",
+];
+
 function isSystemPackage(apkPath: string): boolean {
-  return apkPath.startsWith("/system/app/") || apkPath.startsWith("/system/priv-app/");
+  for (const prefix of SYSTEM_PATH_PREFIXES) {
+    if (apkPath.startsWith(prefix)) return true;
+  }
+  return false;
 }
 
 interface Row {
