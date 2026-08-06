@@ -241,7 +241,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
 
   const openWindow = useCallback((
     appId: string,
-    opts?: { shellCmd?: string; minimizeIfOpen?: boolean },
+    opts?: { shellCmd?: string; minimizeIfOpen?: boolean; autoMaximize?: boolean },
   ) => {
     const app = getApp(appId);
     if (!app) return;
@@ -276,39 +276,108 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
           return next;
         });
         bringToFrontRef.current?.(existing[0]);
+        // If the caller asked to auto-maximize an existing single-window
+        // app (e.g. re-connect path), honour it — flip maximized on.
+        if (opts?.autoMaximize) {
+          setWindows((prev) => {
+            const win = prev.get(existing[0]);
+            if (!win || win.maximized) return prev;
+            return new Map(prev).set(existing[0], {
+              ...win,
+              maximized: true,
+              _savedW: win.width,
+              _savedH: win.height,
+              _savedX: win.x,
+              _savedY: win.y,
+            });
+          });
+        }
         return;
       }
     }
 
     setActiveApps((prev) => new Set(prev).add(appId));
 
-    setTopZ((z) => {
-      const next = z + 1;
-      const newId = nextId(appId);
-
-      setWindows((prev) => {
-        if (prev.has(newId)) return prev;
-        const count = prev.size;
-        const def = app.defaultSize ?? DEFAULT_WIN_SIZE;
-        const w: WinState = {
-          id: newId,
-          appId,
-          x: 30 + (count % 6) * WIN_OFFSET,
-          y: 30 + (count % 6) * WIN_OFFSET,
-          width: def.width,
-          height: def.height,
-          zIndex: next,
-          minimized: false,
-          maximized: false,
-          shellCmd: opts?.shellCmd,
-        };
-        return new Map(prev).set(newId, w);
-      });
-
-      return next;
+    // Compute the new id and target zIndex OUTSIDE the state updaters.
+    // React 18 StrictMode runs updater functions twice in development
+    // to surface impure updates; doing `nextId(appId)` (which mutates
+    // idCounterRef) and `setWindows(...)` (which schedules a render)
+    // inside the setTopZ updater used to create two windows for one
+    // logical "open". Hoisting side effects out makes the updaters
+    // pure so StrictMode's re-run is idempotent.
+    const newId = nextId(appId);
+    const zIndex = topZ + 1;
+    setTopZ(zIndex);
+    setWindows((prev) => {
+      if (prev.has(newId)) return prev;
+      const count = prev.size;
+      const def = app.defaultSize ?? DEFAULT_WIN_SIZE;
+      // autoMaximize: open the window already in maximized state so
+      // its content flows under the topbar (macOS merge). We save the
+      // user-requested geometry so "Restore" puts the window back at
+      // its natural position. The flag is consumed inside this single
+      // setWindows call so it never leaks to subsequent windows.
+      const wantsMaximize = opts?.autoMaximize === true;
+      const w: WinState = wantsMaximize
+        ? {
+            id: newId,
+            appId,
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+            zIndex,
+            minimized: false,
+            maximized: true,
+            _savedW: def.width,
+            _savedH: def.height,
+            _savedX: 30 + (count % 6) * WIN_OFFSET,
+            _savedY: 30 + (count % 6) * WIN_OFFSET,
+            shellCmd: opts?.shellCmd,
+          }
+        : {
+            id: newId,
+            appId,
+            x: 30 + (count % 6) * WIN_OFFSET,
+            y: 30 + (count % 6) * WIN_OFFSET,
+            width: def.width,
+            height: def.height,
+            zIndex,
+            minimized: false,
+            maximized: false,
+            shellCmd: opts?.shellCmd,
+          };
+      return new Map(prev).set(newId, w);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabledApps, windows]);
+
+  /**
+   * Auto-open a maximized Terminal whenever a fresh ADB session arrives.
+   * Watched via the `session` reference from useAdbSession — the user
+   * has no way to cancel this without disconnecting again, and the
+   * Terminal is the natural first stop for an ADB session (ls / logcat /
+   * pm / etc.). We only act on the null→non-null transition so this
+   * doesn't fire on subsequent re-renders, and so a disconnect→reconnect
+   * cycle reopens the Terminal cleanly.
+   *
+   * Edge cases:
+   *  • User explicitly disabled the shell app in Settings — respected
+   *    by `openWindow` (it returns early if the app id isn't in
+   *    `enabledApps`).
+   *  • User is mid-disconnect and the session object momentarily lingers
+   *    before clearing — we use a ref to compare against the last seen
+   *    session so the rising edge only fires on real connect events.
+   */
+  const lastSessionRef = useRef<typeof session>(null);
+  useEffect(() => {
+    const prev = lastSessionRef.current;
+    lastSessionRef.current = session;
+    // Fire only on the rising edge: null → non-null.
+    if (prev === null && session !== null) {
+      openWindow("shell", { autoMaximize: true });
+    }
+  }, [session, openWindow]);
 
   // bringToFront needs to be referenced inside openWindow. We use a ref
   // so we can update it without making openWindow's deps circular.
