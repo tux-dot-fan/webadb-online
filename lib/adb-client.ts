@@ -290,6 +290,37 @@ export class AdbClient {
    * we already use. On older devices where aapt2 isn't on PATH, callers
    * should fall back to just showing the package name.
    */
+  /**
+   * Extract the app's launcher icon as raw image bytes (PNG / WebP).
+   *
+   * Strategy:
+   *   1. Try every `iconCandidates` entry via `unzip -p <apk> <entry>`.
+   *      `unzip -p` writes the entry's bytes to stdout and exits 0; if the
+   *      entry is missing (e.g. an APK repacked without that variant) we
+   *      silently fall through to the next candidate.
+   *   2. Adaptive icons ship as XML — useless to a browser `<img>` tag.
+   *      We sniff the magic bytes and only return raster payloads
+   *      (PNG / WebP / JPEG).
+   *
+   * Returns `null` if no candidate could be extracted. Callers should
+   * fall back to the colored-letter avatar in that case.
+   */
+  async getPackageIcon(apkPath: string, candidates: readonly string[]): Promise<Uint8Array | null> {
+    const s = this.requireSession();
+    for (const entry of candidates) {
+      try {
+        const bytes = await spawnBinary(s.adb, ["unzip", "-p", apkPath, entry]);
+        if (!bytes || bytes.length === 0) continue;
+        // Adaptive icons ship as XML — useless to <img>. Skip and keep trying.
+        // Sniff the first bytes: PNG 89 50 4E 47, WebP 52 49 46 46, JPEG FF D8.
+        if (isRasterImage(bytes)) return bytes;
+      } catch {
+        // unzip exits non-zero if the entry is absent. Keep trying.
+      }
+    }
+    return null;
+  }
+
   async getPackageMeta(apkPath: string): Promise<PackageMeta | null> {
     const s = this.requireSession();
     try {
@@ -944,6 +975,73 @@ async function spawnText(adb: Adb, command: readonly string[]): Promise<string> 
   return text;
 }
 
+/**
+ * Like `spawnText`, but returns stdout as raw `Uint8Array` instead of
+ * a decoded UTF-8 string. Used for binary extraction (icons, APKs).
+ *
+ * Throws on non-zero exit so callers can distinguish "command failed"
+ * from "command succeeded with empty output" — the icon-extraction
+ * caller treats both as "no icon" but the type system should keep the
+ * two paths separate.
+ */
+async function spawnBinary(adb: Adb, command: readonly string[]): Promise<Uint8Array> {
+  const shell = adb.subprocess.shellProtocol;
+  if (shell && shell.isSupported) {
+    const procPromise = shell.spawn(command);
+    const result = await procPromise.wait();
+    if (result.exitCode !== 0) {
+      throw new Error(
+        `Command failed (exit ${result.exitCode}): ${command.join(" ")}\n` +
+          (result.stderr ? new TextDecoder().decode(result.stderr) : ""),
+      );
+    }
+    return result.stdout;
+  }
+  // Fallback: none-protocol streams raw chunks; concat into one Uint8Array.
+  const proc = await adb.subprocess.noneProtocol.spawn(command);
+  const chunks: Uint8Array[] = [];
+  const reader = proc.output.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value) chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  await proc.exited;
+  let total = 0;
+  for (const c of chunks) total += c.byteLength;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.byteLength; }
+  return out;
+}
+
+/**
+ * Magic-byte sniff for raster image formats Android actually uses for
+ * launcher icons. Anything else (XML adaptive icons, raw drawables,
+ * 9-patch text headers) is useless to a browser `<img>`.
+ *
+ *  • PNG  : 89 50 4E 47 0D 0A 1A 0A
+ *  • WebP : 52 49 46 46 ?? ?? ?? ?? 57 45 42 50 ("RIFF....WEBP")
+ *  • JPEG : FF D8 FF
+ */
+function isRasterImage(bytes: Uint8Array): boolean {
+  if (bytes.length < 12) return false;
+  // PNG
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47) return true;
+  // JPEG
+  if (bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) return true;
+  // WebP ("RIFF" .... "WEBP")
+  if (
+    bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+    bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50
+  ) return true;
+  return false;
+}
+
 // ── Package metadata types + parsers ───────────────────────────────────────
 
 /** Result of `aapt2 dump badging <apk>`. */
@@ -959,11 +1057,15 @@ export interface PackageMeta {
   /** targetSdkVersion, e.g. 34. */
   targetSdk: number | null;
   /**
-   * Best-effort icon resource identifier from `application-icon-*` lines.
-   * Example: "res/mipmap-anydpi-v26/ic_launcher.xml". `null` if no icon
-   * is declared. Used to extract a real icon from the APK on demand.
+   * Icon resource paths from `aapt2 dump badging`, sorted by extraction
+   * preference. PNG / WebP / JPEG raster entries come first (smallest
+   * density preferred), followed by XML adaptive-icon entries as a
+   * last-resort fallback (currently unusable — browsers can't render
+   * adaptive-icon XML — but kept so future code can render them).
+   *
+   * Empty if the APK declares no icon at all (rare).
    */
-  iconRes: string | null;
+  iconCandidates: string[];
   /** Whether the APK declares `android:debuggable="true"`. */
   debuggable: boolean;
 }
@@ -1040,16 +1142,13 @@ export interface PackageDetails {
  */
 function parseAaptBadging(text: string): PackageMeta | null {
   let label: string | null = null;
-  let iconRes: string | null = null;
+  /** Every `application-icon-<dpi>: '<res>'` entry, in encounter order. */
+  const iconEntries: Array<{ dpi: number; res: string }> = [];
   let versionName: string | null = null;
   let versionCode: number | null = null;
   let minSdk: number | null = null;
   let targetSdk: number | null = null;
   let debuggable = false;
-
-  // Pick the smallest-density icon (mdpi=160dpi) for portability, fall
-  // back to whatever density is present.
-  let iconDpi = Number.POSITIVE_INFINITY;
 
   for (const line of text.split("\n")) {
     if (!label) {
@@ -1059,10 +1158,8 @@ function parseAaptBadging(text: string): PackageMeta | null {
     const icon = line.match(/^application-icon-(\d+):\s*'([^']+)'/);
     if (icon) {
       const dpi = Number.parseInt(icon[1], 10);
-      if (Number.isFinite(dpi) && dpi < iconDpi) {
-        iconDpi = dpi;
-        iconRes = icon[2];
-      }
+      const res = icon[2];
+      if (Number.isFinite(dpi)) iconEntries.push({ dpi, res });
     }
     const verLine = line.match(/^package:\s*name='[^']+'\s+versionCode='([^']+)'\s+versionName='([^']+)'/);
     if (verLine && versionName === null) {
@@ -1081,13 +1178,23 @@ function parseAaptBadging(text: string): PackageMeta | null {
 
   if (label === null && versionName === null) return null;
 
+  // Sort icon candidates: raster first (smallest DPI), then XML adaptive.
+  // Smaller DPI = lower resolution = the most portable render target.
+  iconEntries.sort((a, b) => {
+    const aXml = a.res.endsWith(".xml") ? 1 : 0;
+    const bXml = b.res.endsWith(".xml") ? 1 : 0;
+    if (aXml !== bXml) return aXml - bXml;
+    return a.dpi - b.dpi;
+  });
+  const iconCandidates = iconEntries.map((e) => e.res);
+
   return {
     label: label ?? "",
     versionName,
     versionCode: Number.isFinite(versionCode) ? versionCode : null,
     minSdk,
     targetSdk,
-    iconRes,
+    iconCandidates,
     debuggable,
   };
 }

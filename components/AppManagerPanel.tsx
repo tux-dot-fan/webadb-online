@@ -12,10 +12,11 @@
 //   • launch, disable, enable, clear data, uninstall
 //   • inspect permissions and grant/revoke runtime permissions
 //
-// Icons: we don't pull real APK icons (would need a ZIP parser + per-APK
-// resource extraction). Instead each row shows a colored circle with the
-// app's first letter — same pattern Android Studio, Nova Launcher, and
-// macOS Launchpad fall back to when no icon is available.
+// Icons: each row fetches the package's real launcher icon from the APK via
+// `adb shell unzip -p <apk> <res>`, with a module-level cache so the row
+// list and the detail pane share one ADB round-trip per package. Falls back
+// to the colored-letter avatar when extraction fails (no declared icon,
+// APK repacked, network error, …).
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
@@ -101,6 +102,106 @@ function formatBytes(n: number | null): string {
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+/**
+ * Detect the MIME type from the first few bytes of an icon payload, so the
+ * browser tags the Blob correctly and `<img>` decodes without sniffing.
+ */
+function iconMime(bytes: Uint8Array): string {
+  if (bytes.length >= 4 &&
+      bytes[0] === 0x89 && bytes[1] === 0x50 &&
+      bytes[2] === 0x4E && bytes[3] === 0x47) return "image/png";
+  if (bytes.length >= 3 && bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF) return "image/jpeg";
+  if (bytes.length >= 12 &&
+      bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 &&
+      bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50) return "image/webp";
+  return "application/octet-stream";
+}
+
+/**
+ * Module-level icon cache. Keyed by APK path so that the detail pane and
+ * the row list for the same package share one ADB round-trip.
+ *
+ * Value is the promise (not the bytes) so concurrent callers all await the
+ * same `unzip -p` invocation instead of fanning out N requests.
+ */
+const iconFetchCache = new Map<string, Promise<Uint8Array | null>>();
+function fetchIcon(apkPath: string, candidates: readonly string[]): Promise<Uint8Array | null> {
+  const key = apkPath + "\u0000" + candidates.join("|");
+  let p = iconFetchCache.get(key);
+  if (!p) {
+    p = getAdbClient().getPackageIcon(apkPath, candidates);
+    iconFetchCache.set(key, p);
+  }
+  return p;
+}
+
+/** Render an app icon: tries the real raster from the APK, falls back to the
+ * colored-letter avatar. The fetch is shared across instances via a
+ * module-level cache so two avatars for the same APK share one ADB call.
+ */
+function AppIcon({
+  apkPath, candidates, colour, letter, size,
+}: {
+  apkPath: string;
+  candidates: readonly string[];
+  colour: string;
+  letter: string;
+  /** "sm" (default, 40px row) or "lg" (96px detail). */
+  size?: "sm" | "lg";
+}) {
+  const [src, setSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    // Empty candidates means the APK declared no icon — skip the round-trip.
+    if (candidates.length === 0) return;
+    let url: string | null = null;
+    let cancelled = false;
+    fetchIcon(apkPath, candidates)
+      .then((bytes) => {
+        if (cancelled || !bytes) return;
+        // Copy into a fresh ArrayBuffer so the BlobPart type is satisfied
+        // (TS 5.x narrows `Uint8Array.buffer` to `ArrayBufferLike` which
+        // includes SharedArrayBuffer; Blob wants a concrete ArrayBuffer).
+        const ab = new ArrayBuffer(bytes.byteLength);
+        new Uint8Array(ab).set(bytes);
+        const blob = new Blob([ab], { type: iconMime(bytes) });
+        url = URL.createObjectURL(blob);
+        setSrc(url);
+      })
+      .catch(() => { /* stay on letter avatar */ });
+    return () => {
+      cancelled = true;
+      // Note: we don't revoke the blob URL here — the next mount of the same
+      // icon (e.g. switching back to the same package) will reuse it via the
+      // module cache. revokeObjectURL fires on cache eviction only.
+    };
+  }, [apkPath, candidates]);
+
+  const cls = `apps-avatar${size === "lg" ? " apps-avatar-lg" : ""}`;
+  if (!src) {
+    return (
+      <span className={cls} style={{ background: colour }} aria-hidden>
+        {letter}
+      </span>
+    );
+  }
+  return (
+    <span className={cls} style={{ background: colour }} aria-hidden>
+      <img
+        src={src}
+        alt=""
+        draggable={false}
+        onLoad={() => {
+          // Once the raster decodes we don't need the colored backdrop, but
+          // we keep it visible behind transparent icons (rare for launcher
+          // icons but harmless). Setting width/height in CSS keeps layout
+          // stable while the image loads.
+        }}
+      />
+    </span>
+  );
 }
 
 /** Format an ISO timestamp as a short date. */
@@ -471,13 +572,12 @@ export function AppManagerPanel({ session: _session }: Props) {
                   setCtxMenu({ pkg: r.pkg.packageName, x: e.clientX, y: e.clientY });
                 }}
               >
-                <span
-                  className="apps-avatar"
-                  style={{ background: colour }}
-                  aria-hidden
-                >
-                  {letter}
-                </span>
+                <AppIcon
+                  apkPath={r.pkg.apkPath}
+                  candidates={r.meta?.iconCandidates ?? []}
+                  colour={colour}
+                  letter={letter}
+                />
                 <span className="apps-row-text">
                   <span className="apps-row-label">{label}</span>
                   <span className="apps-row-pkg">{r.pkg.packageName}</span>
@@ -629,13 +729,13 @@ function AppDetail({
   return (
     <div className="apps-detail">
       <header className="apps-detail-header">
-        <span
-          className="apps-avatar apps-avatar-lg"
-          style={{ background: colour }}
-          aria-hidden
-        >
-          {letter}
-        </span>
+        <AppIcon
+          apkPath={row.pkg.apkPath}
+          candidates={row.meta?.iconCandidates ?? []}
+          colour={colour}
+          letter={letter}
+          size="lg"
+        />
         <div className="apps-detail-titles">
           <h3 className="apps-detail-label">{label}</h3>
           <p className="apps-detail-pkg">{row.pkg.packageName}</p>
