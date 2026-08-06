@@ -34,6 +34,25 @@ interface Props {
 type FilterMode = "all" | "system" | "user" | "disabled";
 type SortMode = "label" | "size" | "install";
 
+/**
+ * A package is "system" iff its APK lives under /system/app/ or
+ * /system/priv-app/. Everything else — /data/app/ (user installs),
+ * /system_ext/, /vendor/, /product/, /oem/, etc. — is third-party.
+ *
+ * This is Android's authoritative partition layout (AOSP frameworks/base
+ * PackageManagerService.getPackageInfo): only /system/app and
+ * /system/priv-app are read-only system images. Other paths are user-writable
+ * or product-specific and behave like user apps for our purposes (disable /
+ * uninstall UI controls).
+ *
+ * We deliberately DO NOT trust dumpsys `System app:` / `Flags=` markers —
+ * those are absent or wrong on many OEM ROMs (MIUI/HyperOS, ColorOS, etc.),
+ * which caused every package to be classified as third-party.
+ */
+function isSystemPackage(apkPath: string): boolean {
+  return apkPath.startsWith("/system/app/") || apkPath.startsWith("/system/priv-app/");
+}
+
 interface Row {
   pkg: PackageInfo;
   meta: PackageMeta | null;
@@ -187,7 +206,7 @@ export function AppManagerPanel({ session: _session }: Props) {
           && !pkg.packageName.toLowerCase().includes(needle)) {
         continue;
       }
-      const isSystem = details?.isSystem ?? false;
+      const isSystem = isSystemPackage(pkg.apkPath);
       const isDisabled = details ? !details.enabled : false;
       if (filter === "system" && !isSystem) continue;
       if (filter === "user" && isSystem) continue;
@@ -438,7 +457,7 @@ export function AppManagerPanel({ session: _session }: Props) {
             const letter = avatarLetter(r.meta?.label ?? "", r.pkg.packageName);
             const colour = avatarColor(r.pkg.packageName);
             const label = r.meta?.label || r.pkg.packageName;
-            const isSystem = r.details?.isSystem ?? false;
+            const isSystem = isSystemPackage(r.pkg.apkPath);
             const isDisabled = r.details ? !r.details.enabled : false;
             return (
               <button
@@ -588,7 +607,7 @@ function AppDetail({
   const label = row.meta?.label || row.pkg.packageName;
   const letter = avatarLetter(label, row.pkg.packageName);
   const colour = avatarColor(row.pkg.packageName);
-  const isSystem = row.details?.isSystem ?? false;
+  const isSystem = isSystemPackage(row.pkg.apkPath);
   const isEnabled = row.details?.enabled ?? true;
   const requested = row.details?.requestedPermissions ?? [];
   const granted = row.details?.grantedPermissions ?? [];

@@ -998,8 +998,6 @@ export interface AppComponent {
 }
 
 export interface PackageDetails {
-  /** `true` for system packages (under `/system/app`, `/system/priv-app`). */
-  isSystem: boolean;
   /** Component enabled state: "enabled", "disabled", "default". */
   enabled: boolean;
   /** First install time as ISO string, or null if unknown. */
@@ -1111,7 +1109,6 @@ function unescapeAaptString(s: string): string {
 function parseDumpsysPackage(text: string, pkg: string): PackageDetails {
   const lines = text.split("\n");
   const result: PackageDetails = {
-    isSystem: false,
     enabled: true,
     firstInstallTime: null,
     lastUpdateTime: null,
@@ -1212,10 +1209,6 @@ function parseDumpsysPackage(text: string, pkg: string): PackageDetails {
     if (/^installLocation=/.test(line)) {
       const m = line.match(/^installLocation=(\d+)/);
       if (m) result.installLocation = Number.parseInt(m[1], 10);
-    }
-
-    if (/^System app:/.test(line) || /^Flags=.*SYSTEM/.test(line)) {
-      result.isSystem = true;
     }
 
     // Section header for the requested-permissions list.
