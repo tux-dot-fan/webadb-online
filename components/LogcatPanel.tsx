@@ -179,6 +179,7 @@ export function LogcatPanel({ session }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
   const [tagSpec, setTagSpec] = useState("");
+  const [historyLines, setHistoryLines] = useState(2000);
   const [filter, setFilter] = useState<FilterKey>({ kind: "all" });
   const [textFilter, setTextFilter] = useState("");
   const [regexMode, setRegexMode] = useState(false);
@@ -311,7 +312,9 @@ export function LogcatPanel({ session }: Props) {
     // read stdout to completion, ingest, and auto-stop.
     const extraArgs: string[] = [];
     if (mode === "tail") extraArgs.push("-T", "1");
-    if (mode === "history") extraArgs.push("-d");
+    if (mode === "history") {
+      extraArgs.push("-d", "-T", String(Math.max(1, historyLines)));
+    }
 
     try {
       const proc = await client.startLogcat([
@@ -557,6 +560,29 @@ export function LogcatPanel({ session }: Props) {
             ))}
           </select>
         </label>
+        <label
+          className="row-label"
+          style={{
+            opacity: mode === "history" ? 1 : 0.4,
+            pointerEvents: mode === "history" ? "auto" : "none",
+          }}
+          title="How many recent lines to dump in History mode"
+        >
+          Lines
+          <input
+            type="number"
+            min={50}
+            max={100000}
+            step={100}
+            value={historyLines}
+            disabled={mode !== "history" || running}
+            onChange={(e) =>
+              setHistoryLines(Math.max(50, Number(e.target.value) || 50))
+            }
+            className="num-input"
+            style={{ width: 90, fontFamily: "var(--mono)" }}
+          />
+        </label>
       </div>
 
       {error && (
@@ -635,7 +661,7 @@ export function LogcatPanel({ session }: Props) {
           <LogRow
             key={line.id}
             line={line}
-            hlText={textFilter && !regexMode ? textFilter : ""}
+            hlText={textFilter && !regexMode ? textFilter.trim() : ""}
             copied={copiedId === line.id}
             onClick={() => void copyLine(line)}
           />
@@ -788,27 +814,32 @@ function LogRow({
 
 function HighlightedText({ line, hlText }: { line: LogLine; hlText: string }) {
   const spans = parseAnsi(line.raw);
-  // If we have plain-text highlight and there are no ANSI spans (or only
-  // trivial styling), split on the substring and wrap matches.
-  if (hlText && line.raw.toLowerCase().includes(hlText.toLowerCase())) {
+  // If we have a plain-text highlight, split the raw line on case-insensitive
+  // matches and wrap each occurrence in <span class="log-hl">. We disable
+  // highlighting when the user is in regex mode (the regex itself controls
+  // what's kept; highlighting every char class match is noisy).
+  if (hlText) {
     const re = new RegExp(
       `(${hlText.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`,
       "ig",
     );
-    const parts = line.raw.split(re);
-    return (
-      <>
-        {parts.map((p, i) =>
-          i % 2 === 1 ? (
-            <span key={i} className="log-hl">
-              {p}
-            </span>
-          ) : (
-            <span key={i}>{p}</span>
-          ),
-        )}
-      </>
-    );
+    if (re.test(line.raw)) {
+      re.lastIndex = 0;
+      const parts = line.raw.split(re);
+      return (
+        <>
+          {parts.map((p, i) =>
+            i % 2 === 1 ? (
+              <span key={i} className="log-hl">
+                {p}
+              </span>
+            ) : (
+              <span key={i}>{p}</span>
+            ),
+          )}
+        </>
+      );
+    }
   }
   // Fallback: render ANSI spans + a parsed tag/message breakdown.
   return (
