@@ -538,6 +538,60 @@ export class AdbClient {
   }
 
   /**
+   * Clear the on-device logcat ring buffer (`logcat -c`). Non-fatal if the
+   * device refuses — older Androids without root may reject this.
+   */
+  async clearLogcatBuffer(): Promise<void> {
+    const s = this.requireSession();
+    try {
+      await spawnText(s.adb, ["logcat", "-c"]);
+    } catch (e) {
+      // Surface a friendlier message but don't throw — the UI still works.
+      throw new Error(
+        `Couldn't clear logcat buffer: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  /**
+   * Dump recent logcat history (one-shot). Wraps `logcat -d` — exits when
+   * done. Returns the raw stdout text. The caller is expected to parse and
+   * feed it into the panel's line buffer.
+   *
+   * Useful when the user wants to load a chunk of history without starting
+   * a live stream. Common flags:
+   *   -d           dump and exit (no follow)
+   *   -t <N>       only print the last N lines (most recent first)
+   *   -T <N>       only print the last N lines (most recent first; unlike
+   *                -t it counts elapsed-time/log-time boundaries too)
+   *   -s <spec>    tag filter, e.g. "MyTag:V *:E"
+   */
+  async dumpLogcat(args: string[]): Promise<string> {
+    const s = this.requireSession();
+    const shell = s.adb.subprocess.shellProtocol;
+    if (!shell || !shell.isSupported) {
+      throw new Error("Device doesn't support Shell V2 protocol");
+    }
+    const proc = await shell.spawn(["logcat", "-d", ...args]);
+    const stream = proc.stdout as unknown as ReadableStream<Uint8Array>;
+    const reader = stream.getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: false });
+    let out = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        out += decoder.decode(value, { stream: true });
+      }
+      out += decoder.decode();
+    } finally {
+      reader.releaseLock();
+      try { void proc.kill(); } catch { /* ignore */ }
+    }
+    return out;
+  }
+
+  /**
    * Start an interactive PTY (pseudo-terminal) shell. The returned object
    * exposes a `WritableStream` (`input`) for bytes the terminal sends and a
    * `ReadableStream` (`output`) for bytes the device sends back — the
