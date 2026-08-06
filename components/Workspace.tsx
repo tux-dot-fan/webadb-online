@@ -156,6 +156,39 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   /**
+   * "Landing mode" is the in-between state where the user hasn't connected
+   * yet and no app windows are open. In this mode the page behaves like a
+   * regular web page — `document` scrolls naturally and the dock is hidden.
+   * The moment the user connects a device or opens any window/overlay, we
+   * flip into "desktop mode": `document.body` is locked at the viewport
+   * height and the macOS-style chrome (dock, draggable windows, etc.) takes
+   * over. This keeps the marketing page pleasant to read while preserving
+   * the desktop metaphor once the user starts working.
+   */
+  const isLandingMode =
+    session === null &&
+    windows.size === 0 &&
+    !launcherOpen &&
+    !dashOpen &&
+    !settingsOpen;
+
+  // Mirror landing/desktop mode into <body>'s dataset so the CSS can decide
+  // whether to lock `document` scrolling. Done via an effect (not a JSX
+  // prop) so the rest of the page tree doesn't re-render on toggle.
+  useEffect(() => {
+    if (isLandingMode) {
+      document.body.dataset.mode = "landing";
+    } else {
+      document.body.dataset.mode = "desktop";
+    }
+    return () => {
+      // Reset on unmount so we don't leave the body class dangling if the
+      // component is ever torn down (e.g. hot-reload during dev).
+      delete document.body.dataset.mode;
+    };
+  }, [isLandingMode]);
+
+  /**
    * Open or focus one of the overlay apps. If the overlay is already
    * visible this is a no-op (the overlay manages its own dismissal). If
    * it's hidden, we show it and bring it to the front of the overlay
@@ -601,7 +634,12 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
           <SettingsOverlay onClose={() => setSettingsOpen(false)} />
         )}
 
-        {/* ── Dock (anchored to bottom of desktop area, above content) ─ */}
+        {/* ── Dock (anchored to bottom of desktop area, above content) ─
+            Hidden in landing mode — the marketing page doesn't need it and
+            the user should be reading top-to-bottom without chrome in the
+            way. As soon as a device is connected or any window/overlay is
+            open, the dock fades in. */}
+        {!isLandingMode && (
         <nav className="dock" role="navigation" aria-label="Applications">
         {dockAppsList.map((app) => {
           // For overlay apps (Apps / Search / Settings), "active" means
@@ -651,6 +689,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
           );
         })}
       </nav>
+        )}
       </div>
     </div>
   );

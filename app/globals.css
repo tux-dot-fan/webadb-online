@@ -58,6 +58,19 @@ body {
   font-size: 15px;
   line-height: 1.55;
   min-height: 100vh;
+}
+
+/* Landing mode: let the document scroll naturally so the marketing hero
+   reads like a normal web page. The macOS desktop metaphor only kicks in
+   once the user is connected or has opened an app window. */
+body[data-mode="landing"],
+body:not([data-mode="desktop"]) {
+  overflow-y: auto;
+}
+
+/* Desktop mode: lock the document so window dragging doesn't accidentally
+   scroll the whole page behind the chrome. */
+body[data-mode="desktop"] {
   overflow: hidden;
 }
 

@@ -239,12 +239,12 @@ export function LogcatPanel({ session }: Props) {
   /** Push parsed lines into the buffer. */
   function ingest(raws: string[]) {
     if (raws.length === 0) return;
-    const out: LogLine[] = new Array(raws.length);
-    for (let i = 0; i < raws.length; i++) {
-      const r = raws[i];
+    const out: LogLine[] = [];
+    for (const r of raws) {
       if (!r) continue;
-      out[i] = parseLine(r, nextIdRef.current++, pkgFor);
+      out.push(parseLine(r, nextIdRef.current++, pkgFor));
     }
+    if (out.length === 0) return;
     linesRef.current.push(...out);
     // Cap memory: drop oldest beyond bufferSize.
     if (linesRef.current.length > bufferSize) {
