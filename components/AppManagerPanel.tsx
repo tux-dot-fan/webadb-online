@@ -21,6 +21,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   getAdbClient,
   type AdbSession,
+  type AppComponent,
   type PackageInfo,
   type PackageMeta,
   type PackageDetails,
@@ -270,7 +271,7 @@ export function AppManagerPanel({ session: _session }: Props) {
   } | null>(null);
 
   const action = useCallback(
-    async (kind: "launch" | "disable" | "enable" | "clear" | "uninstall", pkg: string) => {
+    async (kind: "launch" | "launchActivity" | "disable" | "enable" | "clear" | "uninstall", pkg: string, extra?: { className?: string }) => {
       setPending(`${kind}:${pkg}`);
       setError(null);
       try {
@@ -280,6 +281,12 @@ export function AppManagerPanel({ session: _session }: Props) {
             await client.launchPackage(pkg);
             setStatus(`Launched ${pkg}`);
             break;
+          case "launchActivity": {
+            if (!extra?.className) throw new Error("launchActivity needs a className");
+            await client.launchActivity(pkg, extra.className);
+            setStatus(`Started ${extra.className}`);
+            break;
+          }
           case "disable": {
             const ok = await client.setPackageEnabled(pkg, false);
             if (!ok) throw new Error("pm disable failed");
@@ -473,6 +480,11 @@ export function AppManagerPanel({ session: _session }: Props) {
             row={selectedRow}
             pending={pending}
             onLaunch={() => void action("launch", selectedRow.pkg.packageName)}
+            onLaunchActivity={(className) => void action(
+              "launchActivity",
+              selectedRow.pkg.packageName,
+              { className },
+            )}
             onToggle={() => void action(
               selectedRow.details?.enabled ? "disable" : "enable",
               selectedRow.pkg.packageName,
@@ -552,6 +564,16 @@ interface AppDetailProps {
   row: Row;
   pending: string | null;
   onLaunch: () => void;
+  /**
+   * Launch a specific Activity (deep-link). The className comes from
+   * dumpsys and is already in `<pkg>/<class>` form, so we pass it
+   * straight to `am start -n`. We don't surface a similar hook for
+   * services / receivers / providers because Android doesn't have a
+   * simple CLI to start a service or send a broadcast targeted at a
+   * specific component — surfacing broken-looking buttons would be
+   * worse than not surfacing them.
+   */
+  onLaunchActivity: (className: string) => void;
   onToggle: () => void;
   onClear: () => void;
   onUninstall: () => void;
@@ -560,7 +582,7 @@ interface AppDetailProps {
 
 function AppDetail({
   row, pending,
-  onLaunch, onToggle, onClear, onUninstall,
+  onLaunch, onLaunchActivity, onToggle, onClear, onUninstall,
   onTogglePermission,
 }: AppDetailProps) {
   const label = row.meta?.label || row.pkg.packageName;
@@ -571,6 +593,17 @@ function AppDetail({
   const requested = row.details?.requestedPermissions ?? [];
   const granted = row.details?.grantedPermissions ?? [];
   const grantedSet = new Set(granted);
+  const components = {
+    activity: row.details?.activities ?? [],
+    service: row.details?.services ?? [],
+    receiver: row.details?.receivers ?? [],
+    provider: row.details?.providers ?? [],
+  };
+  const totalComponents =
+    components.activity.length
+    + components.service.length
+    + components.receiver.length
+    + components.provider.length;
 
   const busy = (suffix: string) => pending === `${suffix}:${row.pkg.packageName}`;
 
@@ -645,6 +678,41 @@ function AppDetail({
         <dd className="apps-meta-path">{row.pkg.apkPath}</dd>
       </dl>
 
+      {/*
+        Components section — Activities / Services / Receivers / Providers
+        declared by this package in its manifest. We surface them so a
+        developer can answer "what can this app actually expose to
+        other apps / to my testing harness?" without leaving the
+        browser.
+
+        UX:
+          • 4 tabs at the top with counts; default "All".
+          • Each row: className, optional "permission" badge if gated,
+            "exported" / "not exported" pill, intent action chips.
+          • Activity rows are clickable — they fire `am start -n`,
+            which is the standard developer way to deep-link to a
+            sub-screen (e.g. jump straight to
+            Settings → ConfigureNotificationSettingsActivity).
+          • Service / Receiver / Provider rows are NOT clickable.
+            Android has no clean CLI to invoke a service directly or
+            target a broadcast at a specific component, so we'd have
+            to fake it with `am startservice` / `am broadcast` and a
+            hand-rolled intent. Showing broken-looking buttons is
+            worse than not showing any — keep these as read-only.
+      */}
+      <section className="apps-components">
+        <h4>Components ({totalComponents})</h4>
+        {totalComponents === 0 ? (
+          <p className="muted">No components declared.</p>
+        ) : (
+          <ComponentsList
+            components={components}
+            busyActivityClass={busy("launchActivity")}
+            onLaunchActivity={(cls) => onLaunchActivity(cls)}
+          />
+        )}
+      </section>
+
       <section className="apps-perms">
         <h4>Permissions ({requested.length})</h4>
         {requested.length === 0 ? (
@@ -677,6 +745,181 @@ function AppDetail({
       </section>
     </div>
   );
+}
+
+// ── Components list (Activities / Services / Receivers / Providers) ─────────
+
+type ComponentKind = "activity" | "service" | "receiver" | "provider";
+
+const KIND_LABEL: Record<ComponentKind, string> = {
+  activity: "Activity",
+  service: "Service",
+  receiver: "Receiver",
+  provider: "Provider",
+};
+
+const KIND_ICON: Record<ComponentKind, string> = {
+  activity: "▶",
+  service: "⚙",
+  receiver: "📡",
+  provider: "🗄",
+};
+
+interface ComponentsListProps {
+  components: Record<ComponentKind, AppComponent[]>;
+  busyActivityClass: boolean;
+  onLaunchActivity: (className: string) => void;
+}
+
+function ComponentsList({
+  components, busyActivityClass, onLaunchActivity,
+}: ComponentsListProps) {
+  const [activeTab, setActiveTab] = useState<ComponentKind | "all">("all");
+
+  const tabs: Array<{ key: ComponentKind | "all"; label: string; count: number }> = [
+    { key: "all", label: "All", count:
+      components.activity.length + components.service.length +
+      components.receiver.length + components.provider.length },
+    { key: "activity", label: "Activities", count: components.activity.length },
+    { key: "service", label: "Services", count: components.service.length },
+    { key: "receiver", label: "Receivers", count: components.receiver.length },
+    { key: "provider", label: "Providers", count: components.provider.length },
+  ];
+
+  const visible: Array<{ kind: ComponentKind; c: AppComponent }> = activeTab === "all"
+    ? [
+        ...components.activity.map((c) => ({ kind: "activity" as const, c })),
+        ...components.service.map((c) => ({ kind: "service" as const, c })),
+        ...components.receiver.map((c) => ({ kind: "receiver" as const, c })),
+        ...components.provider.map((c) => ({ kind: "provider" as const, c })),
+      ]
+    : components[activeTab].map((c) => ({ kind: activeTab, c }));
+
+  return (
+    <div className="apps-components-list">
+      <div className="apps-components-tabs" role="tablist">
+        {tabs.map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === t.key}
+            className={`apps-components-tab${activeTab === t.key ? " is-active" : ""}`}
+            onClick={() => setActiveTab(t.key)}
+          >
+            {t.label} <span className="apps-components-tab-count">{t.count}</span>
+          </button>
+        ))}
+      </div>
+
+      <ul className="apps-components-rows">
+        {visible.map(({ kind, c }) => (
+          <ComponentRow
+            key={`${kind}:${c.className}`}
+            kind={kind}
+            component={c}
+            // Activity rows are launchable; the others are read-only.
+            // We pass `undefined` for non-launchable rows so the row
+            // renders as a plain <li> instead of a <button>, and the
+            // visual hint is "this is informational, not actionable".
+            onLaunch={kind === "activity"
+              ? () => onLaunchActivity(c.className)
+              : undefined}
+            busy={kind === "activity" && busyActivityClass}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+interface ComponentRowProps {
+  kind: ComponentKind;
+  component: AppComponent;
+  onLaunch?: () => void;
+  busy: boolean;
+}
+
+function ComponentRow({ kind, component, onLaunch, busy }: ComponentRowProps) {
+  const inner = (
+    <>
+      <span className="apps-component-kind" aria-hidden="true">
+        {KIND_ICON[kind]}
+      </span>
+      <span className="apps-component-body">
+        <span className="apps-component-name" title={component.className}>
+          {component.className}
+        </span>
+        {component.intentActions.length > 0 && (
+          <span className="apps-component-actions">
+            {component.intentActions.slice(0, 3).map((a) => (
+              <span key={a} className="apps-component-action" title={a}>
+                {shortenAction(a)}
+              </span>
+            ))}
+            {component.intentActions.length > 3 && (
+              <span className="apps-component-action apps-component-action-more">
+                +{component.intentActions.length - 3}
+              </span>
+            )}
+          </span>
+        )}
+      </span>
+      <span className="apps-component-meta">
+        {component.permission && (
+          <span
+            className="apps-component-perm"
+            title={component.permission}
+          >
+            🔒 {shortenPermission(component.permission)}
+          </span>
+        )}
+        <span
+          className={`apps-component-exported${component.exported ? "" : " is-private"}`}
+          title={component.exported
+            ? component.permission
+              ? `Exported, gated by ${component.permission}`
+              : "Exported, callable by anyone"
+            : "Not exported"}
+        >
+          {component.exported ? "exported" : "private"}
+        </span>
+      </span>
+    </>
+  );
+
+  if (!onLaunch) {
+    return <li className="apps-component-row apps-component-row--readonly">{inner}</li>;
+  }
+  return (
+    <li className="apps-component-row apps-component-row--launchable">
+      <button
+        type="button"
+        className="apps-component-launch"
+        onClick={onLaunch}
+        disabled={busy}
+        title={`Launch ${component.className}`}
+      >
+        {inner}
+      </button>
+    </li>
+  );
+}
+
+/**
+ * Trim a fully-qualified intent action down to its last segment so
+ * chips like "android.intent.action.MAIN" become "MAIN" and fit on
+ * one line. We keep the full string in the `title` attribute for
+ * hover-tooltips.
+ */
+function shortenAction(action: string): string {
+  const i = action.lastIndexOf(".");
+  return i >= 0 ? action.slice(i + 1) : action;
+}
+
+/** Same idea for permission names: "android.permission.READ_CONTACTS" → "READ_CONTACTS". */
+function shortenPermission(perm: string): string {
+  return shortenAction(perm);
 }
 
 function ContextItem({

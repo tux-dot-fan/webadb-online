@@ -504,6 +504,31 @@ export class AdbClient {
   }
 
   /**
+   * Launch a specific activity of a package via `am start -n <pkg>/<class>`.
+   * Used by the App Manager's component list to deep-link straight to a
+   * specific sub-activity (e.g. Settings → ConfigureNotificationSettingsActivity)
+   * instead of always opening the app's launcher entry point.
+   *
+   * `className` may be fully qualified ("com.foo/.Bar") or relative to
+   * the package ("com.foo/.Bar" or ".Bar" relative to the pkg). We pass
+   * it through verbatim — `am start` handles both forms.
+   */
+  async launchActivity(packageName: string, className: string): Promise<string> {
+    const s = this.requireSession();
+    // `am start -n` wants `componentName` in `<pkg>/<class>` form. The
+    // dumpsys output is already in this format ("com.foo/.Bar"), so a
+    // straight pass-through is correct. If a caller ever passed just a
+    // class (".Bar"), we'd need to prepend the package — that's a future
+    // case, not this one.
+    return spawnText(s.adb, [
+      "am",
+      "start",
+      "-n",
+      `${packageName}/${className}`,
+    ]);
+  }
+
+  /**
    * Start a `logcat` process. Caller is responsible for consuming the stream
    * and killing the process. Used by the Logcat panel — it spawns, pipes
    * stdout into the UI, and kills on unmount.
@@ -943,7 +968,35 @@ export interface PackageMeta {
   debuggable: boolean;
 }
 
-/** Result of `dumpsys package <pkg>`. */
+/**
+ * A single Android component (Activity / Service / Receiver / Provider)
+ * declared in the package's manifest, as surfaced by `dumpsys package`.
+ *
+ * The className is fully qualified (e.g. `com.foo.bar/.MainActivity`).
+ * `intentActions` only lists action names declared via `<intent-filter>`;
+ * we don't surface categories, data spec, or authorities — those are
+ * noisier and rarely useful for the "what can this app actually do?"
+ * question we're answering here.
+ */
+export interface AppComponent {
+  /** Fully qualified class name (e.g. `com.foo/.MainActivity`). */
+  className: string;
+  /** Required permission to use this component, or null if unprotected. */
+  permission: string | null;
+  /**
+   * Whether the component is exported (i.e. callable from outside the
+   * app). Derived from the dumpsys entry: components without a
+   * `Permission: null` are typically exported, and components with
+   * `android:permission` on the tag are gated. We treat "no permission
+   * required" as exported for the user's mental model — a non-exported
+   * component requires a permission to reach, so the absence of one is
+   * the common case and matches the platform's default.
+   */
+  exported: boolean;
+  /** Action names declared via <intent-filter>, in declaration order. */
+  intentActions: string[];
+}
+
 export interface PackageDetails {
   /** `true` for system packages (under `/system/app`, `/system/priv-app`). */
   isSystem: boolean;
@@ -963,6 +1016,14 @@ export interface PackageDetails {
   codePath: string | null;
   /** User 0 install location flag (0=auto, 1=internal, 2=external). */
   installLocation: number | null;
+  /** Activities declared in the manifest (parsed from dumpsys). */
+  activities: AppComponent[];
+  /** Services declared in the manifest (parsed from dumpsys). */
+  services: AppComponent[];
+  /** Broadcast receivers declared in the manifest (parsed from dumpsys). */
+  receivers: AppComponent[];
+  /** Content providers declared in the manifest (parsed from dumpsys). */
+  providers: AppComponent[];
 }
 
 /**
@@ -1059,10 +1120,66 @@ function parseDumpsysPackage(text: string, pkg: string): PackageDetails {
     primaryCpuAbi: null,
     codePath: null,
     installLocation: null,
+    activities: [],
+    services: [],
+    receivers: [],
+    providers: [],
   };
 
   let inRequested = false;
   let inInstall = false;
+
+  /*
+   * Component extraction state.
+   *
+   * `dumpsys package` formats each of the four "Resolver Tables" the
+   * same way:
+   *
+   *   <Kind> Resolver Table:
+   *     Non-Data Actions:
+   *       <action-name>:
+   *         <hash> <pkg>/<className> filter <hash>
+   *         Action: "<action-name>"
+   *         Category: "..."
+   *         ...
+   *         Class Name: "<fully-qualified-name>"
+   *         Permission: "<perm>"  (or "null")
+   *
+   * The action-name header line appears BEFORE the
+   * "<hash> ... filter" line that opens a filter group, so we
+   * buffer the most recent action name in `pendingAction` and
+   * attach it to the pending entry as soon as that entry is
+   * created.
+   */
+  type CompKind = "activity" | "service" | "receiver" | "provider";
+  let currentKind: CompKind | null = null;
+  let pending: AppComponent | null = null;
+  let pendingKind: CompKind | null = null;
+  let inActions = false;
+  let pendingAction: string | null = null;
+
+  /** Push the pending entry into the right bucket, then reset. */
+  const flush = () => {
+    if (pending && pendingKind) {
+      // Kind → array key. "activity" → "activities", etc. We can't use
+      // `<kind>s` because "activity" + "s" = "activitys" (no auto-e
+      // insertion) and "service" + "s" is fine but we want one source
+      // of truth anyway.
+      const bucketKey: keyof Pick<
+        PackageDetails, "activities" | "services" | "receivers" | "providers"
+      > = pendingKind === "activity" ? "activities"
+        : pendingKind === "service" ? "services"
+        : pendingKind === "receiver" ? "receivers"
+        : "providers";
+      result[bucketKey].push(pending);
+    }
+    pending = null;
+    pendingKind = null;
+    // NB: do NOT reset pendingAction here — callers that flush() right
+    // before creating a new pending need to consume pendingAction
+    // afterward. The new pending's intentActions: [pendingAction]
+    // assignment clears it.
+  };
 
   for (const raw of lines) {
     const line = raw.trim();
@@ -1112,25 +1229,158 @@ function parseDumpsysPackage(text: string, pkg: string): PackageDetails {
       inInstall = true;
       continue;
     }
-    // Anything else ends a permission list section.
+    // Anything else ends a permission list section. We test against
+    // `raw` (not `line`) because the permission-list lines are
+    // indented and `line = raw.trim()` has dropped that whitespace.
     if (
-      inRequested && !/^\s+android\./.test(line) && !/^\s+com\./.test(line)
+      inRequested && !/^\s+android\./.test(raw) && !/^\s+com\./.test(raw)
     ) {
       inRequested = false;
     }
     if (inInstall && line === "") inInstall = false;
 
     if (inRequested) {
-      const m = line.match(/^\s+(android\.[\w.]+|[a-z][\w.]*\.[\w.]+)/);
+      const m = raw.match(/^\s+(android\.[\w.]+|[a-z][\w.]*\.[\w.]+)/);
       if (m) result.requestedPermissions.push(m[1]);
     }
     if (inInstall) {
-      const m = line.match(/^\s+(android\.[\w.]+|[a-z][\w.]*\.[\w.]+):\s+granted=true/);
+      const m = raw.match(/^\s+(android\.[\w.]+|[a-z][\w.]*\.[\w.]+):\s+granted=true/);
       if (m && !result.grantedPermissions.includes(m[1])) {
         result.grantedPermissions.push(m[1]);
       }
     }
+
+    // ── Component tables ─────────────────────────────────────────────
+    // Top-level header for one of the four tables. Flush any pending
+    // entry from the previous table and switch the bucket.
+    if (/^Activity Resolver Table:/.test(line)) {
+      flush();
+      currentKind = "activity";
+      inActions = false;
+      continue;
+    }
+    if (/^Service Resolver Table:/.test(line)) {
+      flush();
+      currentKind = "service";
+      inActions = false;
+      continue;
+    }
+    if (/^Receiver Resolver Table:/.test(line)) {
+      flush();
+      currentKind = "receiver";
+      inActions = false;
+      continue;
+    }
+    if (/^Provider Resolver Table:/.test(line)) {
+      flush();
+      currentKind = "provider";
+      inActions = false;
+      continue;
+    }
+
+    // A blank line ends the current filter group (and any pending entry
+    // we haven't yet promoted via Class Name:).
+    if (line === "") {
+      flush();
+      inActions = false;
+      continue;
+    }
+
+    // Non-Data Actions sub-header — we're entering the list of intent
+    // filters for the current component kind.
+    if (/^Non-Data Actions:/.test(line) || /^Actions:/.test(line)) {
+      inActions = true;
+      continue;
+    }
+
+    // The "<hash> <pkg>/<className> filter <hash>" line that opens each
+    // filter group. We capture the className here, and finalize the
+    // entry when we hit the Class Name: line that follows. The
+    // `pendingAction` captured from the preceding action header is
+    // attached here and cleared so the next filter group starts fresh.
+    //
+    // The hash is always lowercase hex (typically 8 chars); we anchor
+    // it with `\s+` after to avoid confusing it with an action header
+    // like `android.intent.action.MAIN:` that also contains dots and
+    // letters.
+    if (
+      inActions && currentKind &&
+      /^\s+[0-9a-f]{6,}\s+\S+\/[\w$.]+\s+filter\s+[0-9a-f]+/.test(raw)
+    ) {
+      // Flush the previous entry (different className starts here).
+      flush();
+      const m = raw.match(/^\s+[0-9a-f]+\s+(\S+)\s+filter\s+[0-9a-f]+/);
+      if (m) {
+        pending = {
+          className: m[1],
+          permission: null,
+          // `exported` is computed below from the Permission: line
+          // (no permission required → exported; required perm →
+          // gated but still exported behind that perm).
+          exported: true,
+          intentActions: pendingAction ? [pendingAction] : [],
+        };
+        pendingKind = currentKind;
+        pendingAction = null;
+      }
+      continue;
+    }
+
+    // The action name itself (e.g. "android.intent.action.MAIN:")
+    // appears as a header line within Non-Data Actions. The header
+    // comes BEFORE the "<hash> ... filter" line that opens the filter
+    // group, so we buffer it in `pendingAction` (declared outside the
+    // loop so it survives across iterations) and consume it on the
+    // "hash filter" line below. Blank lines reset `inActions` to false,
+    // but a new action header re-opens it.
+    if (/^\s+[\w.]+:\s*$/.test(raw)) {
+      pendingAction = line.replace(/:\s*$/, "").trim();
+      inActions = true;
+      continue;
+    }
+
+    // Final form: `Class Name: "com.foo/.Bar"`. dumpsys reprints the
+    // FQCN under this key even though the header line above already
+    // contained it; we trust this one because it's the canonical
+    // representation (handles inner-class `$` mangling consistently).
+    if (pending && /^Class Name:\s+"?/.test(line)) {
+      const m = line.match(/^Class Name:\s+"?([^"]+)"?/);
+      if (m) pending.className = m[1];
+      continue;
+    }
+
+    // Permission gating the component. "Permission: null" means
+    // unprotected (i.e. exported).
+    if (pending && /^Permission:/.test(line)) {
+      if (/^Permission:\s+null\b/.test(line)) {
+        pending.permission = null;
+        pending.exported = true;
+      } else {
+        const m = line.match(/^Permission:\s+(\S+)/);
+        if (m) {
+          pending.permission = m[1];
+          // Components with a `android:permission` are still exported,
+          // just gated. Dumpsys doesn't give us a separate "is this
+          // android:exported=true" signal cleanly, so we treat the
+          // presence of a permission as "still callable, but only
+          // by callers holding that permission".
+          pending.exported = true;
+        }
+      }
+      continue;
+    }
+
+    // `Not exported:` marker (newer Android versions explicitly mark
+    // non-exported components).
+    if (pending && /^\s*Not exported/.test(raw)) {
+      pending.exported = false;
+      continue;
+    }
   }
+
+  // Final flush — the last component in the file may not be followed by
+  // a blank line.
+  flush();
 
   // Fallback: if install permissions section wasn't seen, mark all
   // requested perms as granted (older Android / system apps).
