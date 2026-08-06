@@ -1,13 +1,13 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { DevicePanel } from "@/components/DevicePanel";
 import {
   useAdbSession,
   useAdbState,
   useAdbSupported,
 } from "@/lib/use-adb";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { TopBar } from "@/components/TopBar";
+import { LandingHero } from "@/components/LandingHero";
 import { LauncherApp } from "@/components/LauncherApp";
 import { DashApp } from "@/components/DashApp";
 import { SettingsApp } from "@/components/SettingsApp";
@@ -45,13 +45,6 @@ const MIN_WIN_SIZE = { width: 320, height: 200 };
 const WIN_OFFSET = 24;
 const DEFAULT_WIN_SIZE = { width: 640, height: 420 };
 
-function formatTimestamp(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const pad = (n: number) => n.toString().padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
 // ── Workspace ────────────────────────────────────────────────────────────────
 
 interface WorkspaceProps {
@@ -61,9 +54,7 @@ interface WorkspaceProps {
 }
 
 export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: WorkspaceProps) {
-  const state = useAdbState();
   const session = useAdbSession();
-  const supported = useAdbSupported();
 
   // ── Enabled apps + per-app overrides (Settings → localStorage) ─────────
   // Workspace keeps a reactive copy of these settings so it can:
@@ -414,17 +405,6 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
     };
   }, [drag, resize]);
 
-  // ── Sidebar collapse state ──────────────────────────────────────────────
-
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
-    if (typeof window === "undefined") return false;
-    return localStorage.getItem("webadb.sidebar.collapsed") === "1";
-  });
-  useEffect(() => {
-    try { localStorage.setItem("webadb.sidebar.collapsed", sidebarCollapsed ? "1" : "0"); }
-    catch { /* ignore */ }
-  }, [sidebarCollapsed]);
-
   // ── Shell initial command state ──────────────────────────────────────────
 
   const [shellInitialCmd, setShellInitialCmd] = useState<string | null>(null);
@@ -515,37 +495,17 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
   const topWin = topWinId ? windows.get(topWinId) : null;
 
   return (
-    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
-      {/* ── Left sidebar ─────────────────────────────────────────────── */}
-      <aside className={`sidebar${sidebarCollapsed ? " collapsed" : ""}`}>
-        <div className="sidebar-brand">
-          <span className="brand-icon">🧊</span>
-          <span className="brand-name">WebADB</span>
-          <button
-            className="sidebar-collapse-btn"
-            onClick={() => setSidebarCollapsed((v) => !v)}
-            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-expanded={!sidebarCollapsed}
-          >
-            {sidebarCollapsed ? "›" : "‹"}
-          </button>
-        </div>
-        {!sidebarCollapsed && (
-          <div className="sidebar-section">
-            <p className="sidebar-label">Device</p>
-            <DevicePanel state={state} session={session} supported={supported} />
-          </div>
-        )}
-        <div className="sidebar-footer">
-          {!sidebarCollapsed && <ThemeToggle />}
-          <div className="sidebar-build-info" title={`Git: ${buildGitHash}\nBuilt: ${buildTimestamp}`}>
-            <span className="ver-ver">{buildVersion}</span>
-            <span className="ver-hash">{buildGitHash !== "dev" ? buildGitHash.slice(0, 7) : "dev"}</span>
-            <span className="ver-time">{buildTimestamp !== "dev" ? formatTimestamp(buildTimestamp) : "—"}</span>
-          </div>
-        </div>
-      </aside>
+    <div className="app-shell">
+      {/* ── Top menu bar (macOS-style) ─────────────────────────────── */}
+      <TopBar
+        focusedTitle={topWin ? getApp(topWin.appId)?.title : undefined}
+        focusedIcon={topWin ? getApp(topWin.appId)?.icon : undefined}
+        buildVersion={buildVersion}
+        buildGitHash={buildGitHash}
+        onOpenApps={() => setLauncherOpen(true)}
+        onOpenSearch={() => setDashOpen(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+      />
 
       {/* ── Desktop area ────────────────────────────────────────────── */}
       <div className="desktop-area">
@@ -640,10 +600,9 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
         {settingsOpen && (
           <SettingsOverlay onClose={() => setSettingsOpen(false)} />
         )}
-      </div>
 
-      {/* ── Dock ─────────────────────────────────────────────────────── */}
-      <nav className="dock" role="navigation" aria-label="Applications">
+        {/* ── Dock (anchored to bottom of desktop area, above content) ─ */}
+        <nav className="dock" role="navigation" aria-label="Applications">
         {dockAppsList.map((app) => {
           // For overlay apps (Apps / Search / Settings), "active" means
           // the overlay is currently visible. For regular apps it means
@@ -692,6 +651,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
           );
         })}
       </nav>
+      </div>
     </div>
   );
 }
@@ -999,83 +959,5 @@ function SettingsOverlay({ onClose }: SettingsOverlayProps) {
         <SettingsApp />
       </div>
     </div>
-  );
-}
-
-// ── Landing hero (empty desktop) ──────────────────────────────────────────
-//
-// Rendered when no windows are open. This is the first thing users see when
-// they land on the site — it's also the page's primary SEO-visible content
-// (the surrounding text in app/layout.tsx reinforces this for crawlers but
-// the on-page markup is what humans actually see).
-//
-// Features are pulled straight from REGISTERED_APPS so the list stays in
-// sync automatically: add an app to the registry with a `description` and
-// it shows up here. We exclude overlay apps (Apps / Search / Settings)
-// because they're UI chrome, not user-facing features.
-
-function LandingHero() {
-  const features = REGISTERED_APPS.filter((a) => a.isOverlay !== true);
-
-  return (
-    <section className="landing">
-      <header className="landing-hero">
-        <div className="landing-icon">🧊</div>
-        <h1 className="landing-title">WebADB</h1>
-        <p className="landing-tagline">
-          Run ADB on your Android device entirely from your browser.
-          No install, no drivers, no platform-specific tooling.
-        </p>
-        <p className="landing-sub">
-          Open a real PTY shell, push and install APKs, browse and edit files
-          on the device, stream logcat, take screenshots, manage installed
-          apps, and switch to wireless ADB — all from a single tab in
-          Chrome, Edge, or Opera.
-        </p>
-      </header>
-
-      <h2 className="landing-section-title">What you can do</h2>
-      <ul className="landing-features" aria-label="Features">
-        {features.map((app) => (
-          <li key={app.id} className="landing-feature">
-            <div className="landing-feature-icon" aria-hidden="true">
-              {app.icon}
-            </div>
-            <div className="landing-feature-body">
-              <h3 className="landing-feature-name">{app.title}</h3>
-              <p className="landing-feature-desc">{app.description}</p>
-            </div>
-          </li>
-        ))}
-      </ul>
-
-      <h2 className="landing-section-title">How to connect</h2>
-      <ol className="landing-steps">
-        <li>
-          <strong>Enable USB debugging</strong> on your Android phone
-          (<em>Settings → Developer options → USB debugging</em>).
-        </li>
-        <li>
-          <strong>Plug into USB</strong> and pick the &ldquo;File
-          transfer / MTP&rdquo; mode on the phone prompt.
-        </li>
-        <li>
-          In the sidebar, click <strong>Connect device</strong>, pick your
-          phone in the browser dialog, then tap <strong>Allow</strong> on
-          the phone&rsquo;s RSA fingerprint prompt.
-        </li>
-        <li>
-          Pick an app from the <strong>Dock</strong> below
-          (<span aria-hidden="true">🧊</span>) — most work with the device
-          already plugged in.
-        </li>
-      </ol>
-
-      <p className="landing-foot">
-        WebADB is open source and runs entirely client-side. Your USB
-        traffic never leaves the browser; nothing is uploaded to any
-        server.
-      </p>
-    </section>
   );
 }
