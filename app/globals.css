@@ -326,7 +326,12 @@ pre {
 .topbar {
   position: sticky;
   top: 0;
-  z-index: 50;
+  /* Sit above every window. Windows have z-index derived from their
+     `topZ` counter which starts at 1 and increments forever — so the
+     topbar needs a fixed high z-index that doesn't depend on order.
+     Same value as the dock (1000) so they always layer together as
+     the macOS-style chrome above window content. */
+  z-index: 1000;
   display: flex;
   align-items: center;
   gap: 16px;
@@ -348,6 +353,49 @@ pre {
   min-width: 0;
 }
 .topbar-right { gap: 10px; }
+
+/*
+  Window control mirror group rendered inside the topbar when the
+  focused window is maximized. Same visual language as the
+  titlebar's `.window-ctrl` buttons so they read as the same
+  control surface, just relocated to the topbar.
+*/
+.topbar-window-controls {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  flex-shrink: 0;
+  /* Visually group the three buttons so they look like a single
+     unit sitting in the topbar — a faint pill background and rounded
+     corners mirror macOS. */
+  padding: 4px 6px;
+  background: var(--bg-elev-2);
+  border-radius: 6px;
+}
+.topbar-ctrl {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-dim);
+  transition: background 0.1s, color 0.1s;
+}
+.topbar-ctrl:hover {
+  background: var(--border);
+  color: var(--text);
+}
+.topbar-ctrl-close:hover {
+  background: var(--danger);
+  color: #fff;
+}
 .topbar-center {
   flex: 1 1 auto;
   min-width: 0;
@@ -699,6 +747,18 @@ pre {
 .desktop-window.maximized {
   border-radius: 0;
   border: none;
+}
+
+/*
+  When a window is maximized we want its titlebar to vanish so the
+  content can flow directly under the global topbar — macOS-style.
+  The topbar takes over the role of hosting the min/max/close buttons
+  via `.topbar-window-controls`. `display: none` (not `visibility`)
+  so the flex column below reclaims the titlebar's 38px height and
+  the panel content naturally expands upward.
+*/
+.desktop-window.maximized .window-titlebar {
+  display: none;
 }
 
 .desktop-window.dragging {

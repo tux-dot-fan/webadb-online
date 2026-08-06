@@ -32,6 +32,21 @@ interface TopBarProps {
   focusedTitle?: string;
   /** When non-null, shown as the focused app icon next to the title. */
   focusedIcon?: string;
+  /**
+   * When the focused window is maximized, the topbar mirrors its titlebar
+   * controls so the window's own titlebar can collapse and the window
+   * content can flow directly under the topbar. When undefined (no
+   * focused window, or the focused window is *not* maximized), no
+   * controls are rendered. The topbar still always shows the focused
+   * title text, but for non-maximized windows the titlebar of the
+   * window itself is what hosts the close/max buttons.
+   */
+  windowControls?: {
+    isMaximized: boolean;
+    onMinimize: () => void;
+    onMaximize: () => void;
+    onClose: () => void;
+  };
   /** Called when the user picks "Open Settings" from the menu. */
   onOpenSettings: () => void;
   /** Called when the user picks "Show Apps launcher" from the menu. */
@@ -50,6 +65,7 @@ interface TopBarProps {
 export function TopBar({
   focusedTitle,
   focusedIcon,
+  windowControls,
   onOpenSettings,
   onOpenApps,
   onOpenSearch,
@@ -186,6 +202,52 @@ export function TopBar({
 
         {/* ── Right: status indicators ──────────────────────────────── */}
         <div className="topbar-right">
+          {/*
+            Mirror of the focused window's titlebar controls — only
+            when the focused window is maximized. When the window is
+            in its collapsed titlebar mode, these are the only way
+            to minimize / restore / close it, and macOS users expect
+            them here. The window's own `.window-titlebar` is hidden
+            via CSS in maximized mode (see globals.css), so this is
+            the sole control surface.
+          */}
+          {windowControls?.isMaximized && (
+            <div className="topbar-window-controls" aria-label="Window controls">
+              <button
+                type="button"
+                className="topbar-ctrl topbar-ctrl-minimize"
+                onClick={windowControls.onMinimize}
+                title="Minimize"
+                aria-label="Minimize window"
+              >
+                <svg width="10" height="1" viewBox="0 0 10 1"><rect width="10" height="1" fill="currentColor" /></svg>
+              </button>
+              <button
+                type="button"
+                className="topbar-ctrl topbar-ctrl-maximize"
+                onClick={windowControls.onMaximize}
+                title="Restore"
+                aria-label="Restore window"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10">
+                  <rect x="2" y="0" width="8" height="8" fill="none" stroke="currentColor" strokeWidth="1" />
+                  <rect x="0" y="2" width="8" height="8" fill="var(--bg-elev)" stroke="currentColor" strokeWidth="1" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                className="topbar-ctrl topbar-ctrl-close"
+                onClick={windowControls.onClose}
+                title="Close"
+                aria-label="Close window"
+              >
+                <svg width="10" height="10" viewBox="0 0 10 10">
+                  <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" strokeWidth="1.2" />
+                  <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" strokeWidth="1.2" />
+                </svg>
+              </button>
+            </div>
+          )}
           <StatusPill state={state} />
           {connected && (
             <span

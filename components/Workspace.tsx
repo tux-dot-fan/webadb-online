@@ -533,6 +533,22 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
       <TopBar
         focusedTitle={topWin ? getApp(topWin.appId)?.title : undefined}
         focusedIcon={topWin ? getApp(topWin.appId)?.icon : undefined}
+        // When the focused window is maximized we mirror its titlebar's
+        // three control buttons (min / max / close) into the topbar so
+        // the window's own titlebar can disappear and the window content
+        // flows directly under the global topbar. The button group is
+        // rendered only when there's a focused window — without one,
+        // there's nothing to control.
+        windowControls={
+          topWin
+            ? {
+                isMaximized: topWin.maximized,
+                onMinimize: () => toggleMinimize(topWin.id),
+                onMaximize: () => toggleMaximizeWithSave(topWin.id),
+                onClose: () => closeWindow(topWin.id),
+              }
+            : undefined
+        }
         buildVersion={buildVersion}
         buildGitHash={buildGitHash}
         onOpenApps={() => setLauncherOpen(true)}
@@ -542,7 +558,14 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
 
       {/* ── Desktop area ────────────────────────────────────────────── */}
       <div className="desktop-area">
-        {windows.size === 0 && (
+        {/* LandingHero is shown only in true landing mode — i.e. before
+            the user has connected a device AND no app windows are open
+            AND no overlay is active. Once connected, even with zero
+            windows open, the user is in "desktop mode" and sees the
+            dock against a clean desktop rather than the marketing
+            page. The `isLandingMode` derivation already factors in
+            `session === null`, so we just reuse it. */}
+        {isLandingMode && (
           <LandingHero />
         )}
 
