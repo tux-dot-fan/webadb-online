@@ -352,7 +352,21 @@ pre {
   gap: 8px;
   min-width: 0;
 }
-.topbar-right { gap: 10px; }
+/*
+  Right cluster: when window controls are shown (focused window
+  is maximized) they should sit flush against the right edge of
+  the viewport with the same 12 px padding the topbar uses on
+  the left, so they read as the macOS-style "traffic lights at
+  the top-right corner" of the screen. The element itself is
+  flex but the .topbar-window-controls group sits at its right
+  edge naturally — we just give .topbar-right a stable min-width
+  to keep the centred title from drifting when controls toggle.
+*/
+.topbar-right {
+  gap: 10px;
+  min-width: 100px;
+  justify-content: flex-end;
+}
 
 /*
   Window control mirror group rendered inside the topbar when the
@@ -510,27 +524,14 @@ pre {
   font-size: 13px;
   line-height: 1;
 }
-/* Status indicators (right side). */
-.topbar-device {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  background: var(--bg-elev-2);
-  border-radius: 6px;
-  font-size: 12px;
-  color: var(--text-dim);
-  max-width: 220px;
-  overflow: hidden;
-}
-.topbar-device-serial {
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 11px;
-  color: var(--text);
-  text-overflow: ellipsis;
-  overflow: hidden;
-  white-space: nowrap;
-}
+/*
+  Previously the topbar hosted a device serial chip (`.topbar-device`)
+  and theme toggle (`.theme-toggle`) on the right side. Both have
+  moved: device status lives in the WebADB menu's Connect/Disconnect
+  items, and the theme toggle now lives in Settings → Appearance.
+  We keep the styles defined for any future use, but they're no
+  longer referenced from the topbar render.
+*/
 
 /* About dialog — small modal launched from the WebADB menu. */
 .topbar-about-backdrop {
@@ -700,7 +701,6 @@ pre {
   .topbar { height: 44px; padding: 0 8px; gap: 8px; }
   .topbar-appmenu-name { display: none; }
   .topbar-appmenu-caret { display: none; }
-  .topbar-device { display: none; }
   .topbar-title { font-size: 12px; padding: 3px 8px; }
   .connect-callout-button { min-width: 200px; padding: 12px 24px; font-size: 15px; }
   .connect-callout.connected { flex-direction: column; align-items: stretch; }
@@ -971,6 +971,20 @@ pre {
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 18px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+/*
+  Vertical divider inside the dock, used to separate the system
+  navigation trio (Apps / Search) from the user-facing apps below.
+  Padded on top/bottom so the line doesn't span the full dock
+  height — it stops a few pixels short of the rounded ends.
+*/
+.dock-sep {
+  display: inline-block;
+  width: 1px;
+  align-self: stretch;
+  margin: 8px 4px;
+  background: rgba(255, 255, 255, 0.18);
 }
 
 .dock-item-wrap {
@@ -1850,6 +1864,14 @@ section.panel .panel-desc {
   padding: 10px 12px;
   transition: opacity 0.15s ease;
 }
+/*
+  The Appearance row is a `div` (not a `li`) and isn't a member of
+  the .settings-list collection, so we wrap it in a list-style none
+  context below. We just give it the same look as a regular row.
+*/
+.settings-row--appearance {
+  margin-bottom: 12px;
+}
 .settings-row.is-disabled {
   opacity: 0.55;
 }
@@ -1944,9 +1966,13 @@ section.panel .panel-desc {
 
 /* ── ShellPanel — interactive PTY + 3-tab sidebar ──────────────────────── */
 /*
- * Layout: head row (status + sidebar toggle) on top, body fills the rest
- * as a horizontal flex (sidebar | xterm). The body collapses to a single
- * xterm column when the user hides the sidebar.
+ * Layout: the panel is a vertical flex container with the xterm +
+ * sidebar body filling the full height. The previous head row
+ * (connection status + « Hide / » Sidebar toggle) was removed — the
+ * connection status now lives in the topbar, and the sidebar can be
+ * toggled via the dock context menu or the file manager's "Terminal
+ * here" action. Without the head row the panel has a cleaner macOS-style
+ * top edge — content flows directly from the window titlebar down.
  *
  * The .panel-fill rule on the xterm container makes it stretch to fill
  * the panel (so the terminal grows with the window) — same pattern used
@@ -1960,37 +1986,8 @@ section.panel .panel-desc {
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  gap: 8px;
   padding: 10px 12px;
   color: var(--text);
-}
-.shell-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.shell-panel-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 0.88em;
-  color: var(--text-dim);
-}
-/* The sidebar toggle lives on the right of the head row. */
-.shell-sidebar-toggle {
-  padding: 4px 10px;
-  font-size: 0.82em;
-  border-radius: 6px;
-  background: transparent;
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  cursor: pointer;
-}
-.shell-sidebar-toggle:hover {
-  color: var(--accent);
-  border-color: var(--accent);
 }
 
 /* ── Body: sidebar + xterm ─────────────────────────────────────────────── */

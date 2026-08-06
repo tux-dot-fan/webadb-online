@@ -24,6 +24,7 @@ import {
   onPrefsChanged,
   type AppDefinition,
 } from "@/lib/app-registry";
+import { ThemeToggle } from "@/components/ThemeToggle";
 
 interface AppOverride {
   showInDock?: boolean;
@@ -97,6 +98,27 @@ export function SettingsApp(): React.JSX.Element {
 
   return (
     <div className="settings-app">
+      <header className="settings-header">
+        <h2>Appearance</h2>
+        <p className="settings-hint">
+          Light and dark theme follow your system by default. Toggle here to
+          override.
+        </p>
+      </header>
+
+      <div className="settings-row settings-row--appearance">
+        <div className="settings-row-main">
+          <span className="settings-row-icon" aria-hidden>🎨</span>
+          <div className="settings-row-text">
+            <strong>Theme</strong>
+            <span className="settings-row-desc">
+              Switch between light and dark interface colours.
+            </span>
+          </div>
+          <ThemeToggle />
+        </div>
+      </div>
+
       <header className="settings-header">
         <h2>Apps</h2>
         <p className="settings-hint">

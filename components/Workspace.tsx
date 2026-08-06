@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { Fragment, useState, useCallback, useRef, useEffect } from "react";
 import {
   useAdbSession,
   useAdbState,
@@ -733,7 +733,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
             open, the dock fades in. */}
         {!isLandingMode && (
         <nav className="dock" role="navigation" aria-label="Applications">
-        {dockAppsList.map((app) => {
+        {dockAppsList.map((app, i) => {
           // For overlay apps (Apps / Search / Settings), "active" means
           // the overlay is currently visible. For regular apps it means
           // a window is open. Either way, the dot on the dock icon tells
@@ -744,40 +744,52 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
               : settingsOpen)
             : activeApps.has(app.id);
           const isTopApp = topWin?.appId === app.id;
+          // Visual separator between the system navigation trio
+          // (Apps / Search) and the user-facing apps below. macOS
+          // uses a faint vertical line in the dock for the same
+          // visual grouping.
+          const prevApp = dockAppsList[i - 1];
+          const showSep =
+            prevApp &&
+            prevApp.alwaysEnabled === true &&
+            app.alwaysEnabled !== true;
           return (
-            <DockItem
-              key={app.id}
-              app={app}
-              active={isActive}
-              focused={isTopApp}
-              onClick={() => {
-                if (app.isOverlay) {
-                  // Overlay apps toggle their floating layer.
-                  toggleOverlay(app.id as "launcher" | "dash" | "settings");
-                  return;
-                }
-                if (isActive && app.allowMultipleWindows !== false) {
-                  // Focus existing window of this type
-                  const existing = [...windows.entries()].find(([, w]) => w.appId === app.id);
-                  if (existing) bringToFront(existing[0]);
-                  else openWindow(app.id);
-                } else {
-                  openWindow(app.id);
-                }
-              }}
-              onRightClick={(e) => {
-                e.preventDefault();
-                if (app.isOverlay) {
-                  toggleOverlay(app.id as "launcher" | "dash" | "settings");
-                  return;
-                }
-                if (app.allowMultipleWindows === false) {
-                  openWindow(app.id);
-                } else {
-                  openWindow(app.id);
-                }
-              }}
-            />
+            <Fragment key={app.id}>
+              {showSep && <span className="dock-sep" aria-hidden="true" />}
+              <DockItem
+                key={app.id}
+                app={app}
+                active={isActive}
+                focused={isTopApp}
+                onClick={() => {
+                  if (app.isOverlay) {
+                    // Overlay apps toggle their floating layer.
+                    toggleOverlay(app.id as "launcher" | "dash" | "settings");
+                    return;
+                  }
+                  if (isActive && app.allowMultipleWindows !== false) {
+                    // Focus existing window of this type
+                    const existing = [...windows.entries()].find(([, w]) => w.appId === app.id);
+                    if (existing) bringToFront(existing[0]);
+                    else openWindow(app.id);
+                  } else {
+                    openWindow(app.id);
+                  }
+                }}
+                onRightClick={(e) => {
+                  e.preventDefault();
+                  if (app.isOverlay) {
+                    toggleOverlay(app.id as "launcher" | "dash" | "settings");
+                    return;
+                  }
+                  if (app.allowMultipleWindows === false) {
+                    openWindow(app.id);
+                  } else {
+                    openWindow(app.id);
+                  }
+                }}
+              />
+            </Fragment>
           );
         })}
       </nav>

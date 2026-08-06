@@ -18,6 +18,9 @@
  * hydrates: without it, the page renders in light theme for ~100 ms and
  * then snaps to dark on mount, producing a visible "flash". The inline
  * script reads the same key and applies it synchronously during parsing.
+ *
+ * Renders an iOS-style switch (.toggle + .toggle-knob) so it visually
+ * matches the other toggles in the Settings panel.
  */
 
 import { useEffect, useState } from "react";
@@ -46,17 +49,15 @@ function resolveInitial(): Theme {
 }
 
 export function ThemeToggle() {
-  // Render the same button on first paint to avoid hydration mismatch;
+  // Render the same switch on first paint to avoid hydration mismatch;
   // the actual state catches up on the next tick. This is intentional —
   // the inline boot script in layout.tsx has already applied the right
   // `data-theme` attribute by the time the user sees the toggle, so any
-  // visual mismatch between the button and the page is sub-frame.
+  // visual mismatch between the switch and the page is sub-frame.
   const [theme, setTheme] = useState<Theme>("light");
-  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setTheme(resolveInitial());
-    setMounted(true);
   }, []);
 
   function toggle() {
@@ -71,28 +72,22 @@ export function ThemeToggle() {
     }
   }
 
-  // Visually stable label for the button: it always reads "Toggle theme"
-  // (and shows the icon for the OTHER theme — i.e. "click to switch to
-  // dark" while in light mode). Using the icon (rather than text) keeps
-  // the header compact on mobile.
-  const label =
-    theme === "dark" ? "Switch to light theme" : "Switch to dark theme";
-  const icon = theme === "dark" ? "☀" : "☾";
+  const isDark = theme === "dark";
 
   return (
     <button
       type="button"
       onClick={toggle}
-      aria-label={label}
-      title={label}
-      className="theme-toggle"
+      aria-label={isDark ? "Switch to light theme" : "Switch to dark theme"}
+      title={isDark ? "Switch to light theme" : "Switch to dark theme"}
+      // Use the shared `.toggle` iOS-style switch styling so the theme
+      // picker matches every other toggle in the Settings panel. The
+      // `aria-checked` state matches the resolved theme.
+      className="toggle"
+      role="switch"
+      aria-checked={isDark}
     >
-      {/* Render the icon for the *opposite* of the current theme — the
-          button is "switch to X", so showing X's icon is the convention.
-          Until we know the resolved theme (post-mount) we render nothing
-          rather than guessing, so the first paint matches the layout
-          script's already-applied data-theme attribute. */}
-      <span aria-hidden="true">{mounted ? icon : ""}</span>
+      <span className="toggle-knob" />
     </button>
   );
 }

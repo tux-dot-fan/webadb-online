@@ -385,26 +385,16 @@ const PanelInner = forwardRef<ShellPanelHandle, Props>(
 
     return (
       <section className="panel shell-panel">
-        <div className="shell-panel-head">
-          <div className="shell-panel-title">
-            <StatusBadge status={status} />
-            {status === "stopped" && (
-              <button onClick={() => setRemountKey((k) => k + 1)} className="primary">
-                Restart
-              </button>
-            )}
-          </div>
-          <button
-            className="shell-sidebar-toggle"
-            onClick={() => setSidebarOpen((v) => !v)}
-            title={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
-            aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
-            aria-expanded={sidebarOpen}
-          >
-            {sidebarOpen ? "« Hide" : "» Sidebar"}
-          </button>
-        </div>
-
+        {/*
+          We intentionally do NOT render the previous shell-panel-head
+          (StatusBadge + « Hide / » Sidebar toggle). The connection
+          status is now surfaced in the global topbar / Settings →
+          Device, and the sidebar can be toggled from the dock's
+          context menu or via the file manager's "Terminal here"
+          action. Removing this row gives the panel a cleaner
+          macOS-style top edge — window content flows directly from
+          the titlebar down.
+        */}
         <div className={`shell-panel-body${sidebarOpen ? "" : " sidebar-closed"}`}>
           {sidebarOpen && (
             <TerminalSidebar
@@ -922,37 +912,6 @@ function MenuItem(
     >
       {children}
     </button>
-  );
-}
-
-function StatusBadge({ status }: { status: "starting" | "running" | "stopped" }) {
-  const map = {
-    starting: { color: "var(--warning)", text: "starting" },
-    running: { color: "var(--success)", text: "connected" },
-    stopped: { color: "var(--danger)", text: "disconnected" },
-  } as const;
-  const { color, text } = map[status];
-  return (
-    <span
-      style={{
-        fontSize: 12,
-        color: "var(--text-dim)",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-      }}
-    >
-      <span
-        aria-hidden="true"
-        style={{
-          width: 8,
-          height: 8,
-          borderRadius: "50%",
-          background: color,
-        }}
-      />
-      {text}
-    </span>
   );
 }
 

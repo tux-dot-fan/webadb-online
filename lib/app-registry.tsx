@@ -13,7 +13,7 @@
 //   • shown in the Dock or not (showInDock)
 //   • launched on startup or not (launchOnStartup)
 
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 import type { AdbSession } from "@/lib/adb-client";
 
 /**
@@ -39,8 +39,8 @@ export interface AppDefinition {
   id: string;
   /** Display title shown in the window title bar. */
   title: string;
-  /** Emoji icon shown in the Dock and sidebar. */
-  icon: string;
+  /** Emoji or inline JSX icon shown in the Dock and window title bar. */
+  icon: ReactNode;
   /** The actual React component. Receives AppProps. */
   Component: ComponentType<AppProps>;
   /** Default window size when launched. */
@@ -130,7 +130,38 @@ export const REGISTERED_APPS: AppDefinition[] = [
   {
     id: "shell",
     title: "Terminal",
-    icon: "🐚",
+    // gnome-terminal-style: dark rounded square with `>_` glyph.
+    icon: (
+      <svg
+        viewBox="0 0 24 24"
+        width="24"
+        height="24"
+        aria-hidden="true"
+        style={{ display: "block" }}
+      >
+        <rect
+          x="1.5"
+          y="1.5"
+          width="21"
+          height="21"
+          rx="4"
+          fill="#2c2c2c"
+          stroke="#1a1a1a"
+          strokeWidth="0.5"
+        />
+        <text
+          x="12"
+          y="17"
+          textAnchor="middle"
+          fontFamily="ui-monospace, 'SF Mono', Menlo, Consolas, monospace"
+          fontSize="13"
+          fontWeight="700"
+          fill="#e6e6e6"
+        >
+          {">_"}
+        </text>
+      </svg>
+    ),
     Component: ShellPanel,
     defaultSize: { width: 820, height: 460 },
     showInDock: true,

@@ -13,7 +13,7 @@
 //
 // Open with: openAppWindow("dash")
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   REGISTERED_APPS,
   loadEnabled,
@@ -29,7 +29,7 @@ interface AppResult {
   kind: "app";
   id: string;
   title: string;
-  icon: string;
+  icon: ReactNode;
   desc: string;
 }
 

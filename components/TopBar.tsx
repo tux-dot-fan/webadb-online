@@ -21,9 +21,7 @@
  * border so it acts as a visual anchor without dominating the page.
  */
 
-import { useEffect, useRef, useState } from "react";
-import { StatusPill } from "@/components/StatusPill";
-import { ThemeToggle } from "@/components/ThemeToggle";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAdbState, useAdbSession, useAdbSupported } from "@/lib/use-adb";
 import { useConnectActions } from "@/lib/use-connect-actions";
 
@@ -31,7 +29,7 @@ interface TopBarProps {
   /** When non-null, shown as the middle title (focused app). */
   focusedTitle?: string;
   /** When non-null, shown as the focused app icon next to the title. */
-  focusedIcon?: string;
+  focusedIcon?: ReactNode;
   /**
    * When the focused window is maximized, the topbar mirrors its titlebar
    * controls so the window's own titlebar can collapse and the window
@@ -200,17 +198,8 @@ export function TopBar({
           ) : null}
         </div>
 
-        {/* ── Right: status indicators ──────────────────────────────── */}
+        {/* ── Right: window controls when maximized (flush right) ─────── */}
         <div className="topbar-right">
-          {/*
-            Mirror of the focused window's titlebar controls — only
-            when the focused window is maximized. When the window is
-            in its collapsed titlebar mode, these are the only way
-            to minimize / restore / close it, and macOS users expect
-            them here. The window's own `.window-titlebar` is hidden
-            via CSS in maximized mode (see globals.css), so this is
-            the sole control surface.
-          */}
           {windowControls?.isMaximized && (
             <div className="topbar-window-controls" aria-label="Window controls">
               <button
@@ -248,19 +237,6 @@ export function TopBar({
               </button>
             </div>
           )}
-          <StatusPill state={state} />
-          {connected && (
-            <span
-              className="topbar-device"
-              title={state.kind === "connected" ? state.banner : ""}
-            >
-              <span aria-hidden="true">📱</span>
-              <span className="topbar-device-serial">
-                {state.kind === "connected" ? state.serial || "unknown" : ""}
-              </span>
-            </span>
-          )}
-          <ThemeToggle />
         </div>
       </header>
 
