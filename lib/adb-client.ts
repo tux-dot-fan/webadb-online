@@ -293,26 +293,51 @@ export class AdbClient {
   /**
    * Extract the app's launcher icon as raw image bytes (PNG / WebP).
    *
-   * Strategy:
-   *   1. Try every `iconCandidates` entry via `unzip -p <apk> <entry>`.
-   *      `unzip -p` writes the entry's bytes to stdout and exits 0; if the
-   *      entry is missing (e.g. an APK repacked without that variant) we
-   *      silently fall through to the next candidate.
-   *   2. Adaptive icons ship as XML — useless to a browser `<img>` tag.
-   *      We sniff the magic bytes and only return raster payloads
-   *      (PNG / WebP / JPEG).
+   * Two-stage strategy:
+   *   1. `unzip -Z1 <apk> | grep ic_launcher` lists every entry whose
+   *      path mentions `ic_launcher` (covers `ic_launcher`,
+   *      `ic_launcher_round`, `ic_launcher_foreground`, all DPI buckets).
+   *      `-Z1` prints one entry per line with no header — grep-friendly.
+   *      This works on every ROM that ships `unzip` (toybox / busybox).
+   *      We deliberately do NOT use `aapt2 dump badging` here: aapt2 is
+   *      absent from many OEM ROMs (MIUI, ColorOS, OneUI) and on stock
+   *      AOSP its path is `/system/bin/aapt2` which isn't on the default
+   *      shell PATH.
+   *   2. For each candidate (raster first by ascending DPI, XML last)
+   *      run `unzip -p <apk> <entry>`. Sniff the magic bytes; if they
+   *      look like a raster image, return them. Skip XML adaptive
+   *      icons (browsers can't render them).
    *
-   * Returns `null` if no candidate could be extracted. Callers should
+   * Returns `null` if no candidate yields a raster payload. Callers
    * fall back to the colored-letter avatar in that case.
    */
-  async getPackageIcon(apkPath: string, candidates: readonly string[]): Promise<Uint8Array | null> {
+  async getPackageIcon(apkPath: string): Promise<Uint8Array | null> {
     const s = this.requireSession();
+    let candidates: string[];
+    try {
+      const list = await spawnText(s.adb, [
+        "sh", "-c", `unzip -Z1 '${apkPath.replace(/'/g, "'\\''")}' | grep -E 'ic_launcher'`,
+      ]);
+      candidates = list.split("\n").map((l) => l.trim()).filter(Boolean);
+      // Sort: raster first (smallest DPI bucket wins), XML last.
+      candidates.sort((a, b) => {
+        const aXml = a.endsWith(".xml") ? 1 : 0;
+        const bXml = b.endsWith(".xml") ? 1 : 0;
+        if (aXml !== bXml) return aXml - bXml;
+        // Prefer smaller DPI buckets (mdpi=160) before larger ones.
+        const aMdpi = /mipmap-mdpi/.test(a) ? 0 : /mipmap-hdpi/.test(a) ? 1 : /mipmap-xhdpi/.test(a) ? 2 : /mipmap-xxhdpi/.test(a) ? 3 : /mipmap-xxxhdpi/.test(a) ? 4 : 5;
+        const bMdpi = /mipmap-mdpi/.test(b) ? 0 : /mipmap-hdpi/.test(b) ? 1 : /mipmap-xhdpi/.test(b) ? 2 : /mipmap-xxhdpi/.test(b) ? 3 : /mipmap-xxxhdpi/.test(b) ? 4 : 5;
+        return aMdpi - bMdpi;
+      });
+    } catch {
+      return null;
+    }
+    if (candidates.length === 0) return null;
+
     for (const entry of candidates) {
       try {
         const bytes = await spawnBinary(s.adb, ["unzip", "-p", apkPath, entry]);
         if (!bytes || bytes.length === 0) continue;
-        // Adaptive icons ship as XML — useless to <img>. Skip and keep trying.
-        // Sniff the first bytes: PNG 89 50 4E 47, WebP 52 49 46 46, JPEG FF D8.
         if (isRasterImage(bytes)) return bytes;
       } catch {
         // unzip exits non-zero if the entry is absent. Keep trying.

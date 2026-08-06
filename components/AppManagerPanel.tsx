@@ -12,11 +12,12 @@
 //   • launch, disable, enable, clear data, uninstall
 //   • inspect permissions and grant/revoke runtime permissions
 //
-// Icons: each row fetches the package's real launcher icon from the APK via
-// `adb shell unzip -p <apk> <res>`, with a module-level cache so the row
-// list and the detail pane share one ADB round-trip per package. Falls back
-// to the colored-letter avatar when extraction fails (no declared icon,
-// APK repacked, network error, …).
+// Icons: the row list shows a colored-letter avatar (zero-cost, instant
+// render for 200+ rows). When the user selects a row, the detail pane
+// mounts a single <DetailIcon> that fetches the real launcher icon via
+// `adb shell unzip -Z1 <apk> | grep ic_launcher` + `unzip -p <apk> <res>`.
+// The module-level promise cache keyed by APK path means re-selecting a
+// package is instant. Falls back to the colored-letter avatar on failure.
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
@@ -141,45 +142,65 @@ function iconMime(bytes: Uint8Array): string {
 }
 
 /**
- * Module-level icon cache. Keyed by APK path so that the detail pane and
- * the row list for the same package share one ADB round-trip.
+ * Module-level icon cache. Keyed by APK path so the detail pane and any
+ * future detail surfaces (search results, deep-link previews) for the same
+ * package share one ADB round-trip.
  *
  * Value is the promise (not the bytes) so concurrent callers all await the
  * same `unzip -p` invocation instead of fanning out N requests.
+ *
+ * We deliberately do NOT use this for the row list — see {@link RowAvatar}
+ * below for why.
  */
 const iconFetchCache = new Map<string, Promise<Uint8Array | null>>();
-function fetchIcon(apkPath: string, candidates: readonly string[]): Promise<Uint8Array | null> {
-  const key = apkPath + "\u0000" + candidates.join("|");
-  let p = iconFetchCache.get(key);
+function fetchIcon(apkPath: string): Promise<Uint8Array | null> {
+  let p = iconFetchCache.get(apkPath);
   if (!p) {
-    p = getAdbClient().getPackageIcon(apkPath, candidates);
-    iconFetchCache.set(key, p);
+    p = getAdbClient().getPackageIcon(apkPath);
+    iconFetchCache.set(apkPath, p);
   }
   return p;
 }
 
-/** Render an app icon: tries the real raster from the APK, falls back to the
- * colored-letter avatar. The fetch is shared across instances via a
- * module-level cache so two avatars for the same APK share one ADB call.
+/**
+ * Row-level avatar: just a coloured circle with the app's first letter.
+ *
+ * Never fetches the real raster. Fetching for every visible row would trigger
+ * one `unzip -Z1 | grep ic_launcher` + one `unzip -p` ADB round-trip per app
+ * (≈ 400 shell execs for a 200-app panel, 5-50 ms each on USB), so we keep
+ * the list lazy and use the letter avatar everywhere the row appears.
+ *
+ * To see the real icon users select the row, which mounts {@link DetailIcon}
+ * for just that one package.
  */
-function AppIcon({
-  apkPath, candidates, colour, letter, size,
+function RowAvatar({ colour, letter }: { colour: string; letter: string }) {
+  return (
+    <span className="apps-avatar" style={{ background: colour }} aria-hidden>
+      {letter}
+    </span>
+  );
+}
+
+/**
+ * Detail-pane avatar: shows the real launcher icon once it's been fetched,
+ * falls back to the colored-letter avatar while the request is in flight
+ * or has failed. Exactly one fetch per APK per session (cached).
+ */
+function DetailIcon({
+  apkPath,
+  colour,
+  letter,
 }: {
   apkPath: string;
-  candidates: readonly string[];
   colour: string;
   letter: string;
-  /** "sm" (default, 40px row) or "lg" (96px detail). */
-  size?: "sm" | "lg";
 }) {
   const [src, setSrc] = useState<string | null>(null);
 
   useEffect(() => {
-    // Empty candidates means the APK declared no icon — skip the round-trip.
-    if (candidates.length === 0) return;
     let url: string | null = null;
     let cancelled = false;
-    fetchIcon(apkPath, candidates)
+    fetchIcon(apkPath)
       .then((bytes) => {
         if (cancelled || !bytes) return;
         // Copy into a fresh ArrayBuffer so the BlobPart type is satisfied
@@ -191,36 +212,36 @@ function AppIcon({
         url = URL.createObjectURL(blob);
         setSrc(url);
       })
-      .catch(() => { /* stay on letter avatar */ });
+      .catch((err) => {
+        // Don't stay silent — the developer needs to know whether
+        // `unzip` is missing on the device, the APK declares no icon,
+        // or something else went wrong.
+        // eslint-disable-next-line no-console
+        console.warn(`[DetailIcon] failed for ${apkPath}`, err);
+      });
     return () => {
       cancelled = true;
-      // Note: we don't revoke the blob URL here — the next mount of the same
-      // icon (e.g. switching back to the same package) will reuse it via the
-      // module cache. revokeObjectURL fires on cache eviction only.
     };
-  }, [apkPath, candidates]);
+  }, [apkPath]);
 
-  const cls = `apps-avatar${size === "lg" ? " apps-avatar-lg" : ""}`;
   if (!src) {
     return (
-      <span className={cls} style={{ background: colour }} aria-hidden>
+      <span
+        className="apps-avatar apps-avatar-lg"
+        style={{ background: colour }}
+        aria-hidden
+      >
         {letter}
       </span>
     );
   }
   return (
-    <span className={cls} style={{ background: colour }} aria-hidden>
-      <img
-        src={src}
-        alt=""
-        draggable={false}
-        onLoad={() => {
-          // Once the raster decodes we don't need the colored backdrop, but
-          // we keep it visible behind transparent icons (rare for launcher
-          // icons but harmless). Setting width/height in CSS keeps layout
-          // stable while the image loads.
-        }}
-      />
+    <span
+      className="apps-avatar apps-avatar-lg"
+      style={{ background: colour }}
+      aria-hidden
+    >
+      <img src={src} alt="" draggable={false} />
     </span>
   );
 }
@@ -593,12 +614,7 @@ export function AppManagerPanel({ session: _session }: Props) {
                   setCtxMenu({ pkg: r.pkg.packageName, x: e.clientX, y: e.clientY });
                 }}
               >
-                <AppIcon
-                  apkPath={r.pkg.apkPath}
-                  candidates={r.meta?.iconCandidates ?? []}
-                  colour={colour}
-                  letter={letter}
-                />
+                <RowAvatar colour={colour} letter={letter} />
                 <span className="apps-row-text">
                   <span className="apps-row-label">{label}</span>
                   <span className="apps-row-pkg">{r.pkg.packageName}</span>
@@ -750,12 +766,10 @@ function AppDetail({
   return (
     <div className="apps-detail">
       <header className="apps-detail-header">
-        <AppIcon
+        <DetailIcon
           apkPath={row.pkg.apkPath}
-          candidates={row.meta?.iconCandidates ?? []}
           colour={colour}
           letter={letter}
-          size="lg"
         />
         <div className="apps-detail-titles">
           <h3 className="apps-detail-label">{label}</h3>
