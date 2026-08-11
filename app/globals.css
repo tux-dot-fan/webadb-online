@@ -1695,6 +1695,44 @@ section.panel .panel-desc {
   color: var(--text-dim);
   line-height: 1.6;
 }
+.landing-cta {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin: 24px auto 0;
+  max-width: 640px;
+}
+.landing-cta-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
+}
+.landing-cta-link:hover {
+  background: color-mix(in srgb, var(--accent) 20%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  transform: translateY(-1px);
+}
+.landing-cta-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.landing-cta-link-arrow {
+  font-size: 11px;
+  opacity: 0.7;
+}
 .landing-section-title {
   font-size: 13px;
   text-transform: uppercase;

@@ -37,6 +37,23 @@ export function LandingHero() {
           apps, and switch to wireless ADB — all from a single tab in
           Chrome, Edge, or Opera.
         </p>
+        <div className="landing-cta">
+          <a className="landing-cta-link" href="/blog/">
+            📝 Read the blog
+            <span className="landing-cta-link-arrow" aria-hidden="true">
+              →
+            </span>
+          </a>
+          <a
+            className="landing-cta-link"
+            href="/blog/2026/08/12/How-to-use-webadb-online/"
+          >
+            🚀 How to use webadb.online
+            <span className="landing-cta-link-arrow" aria-hidden="true">
+              →
+            </span>
+          </a>
+        </div>
       </header>
 
       <ConnectCallout />
