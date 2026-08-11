@@ -3,6 +3,7 @@
   "short_name": "WebADB",
   "description": "Run ADB commands on your Android device from your browser over WebUSB. No install, no drivers.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "background_color": "#0b0f17",
   "theme_color": "#0b0f17",
@@ -14,10 +15,10 @@
       "purpose": "any"
     },
     {
-      "src": "/og-image.png",
-      "sizes": "1200x630",
+      "src": "/apple-touch-icon.png",
+      "sizes": "180x180",
       "type": "image/png",
-      "purpose": "any"
+      "purpose": "any maskable"
     }
   ]
 }

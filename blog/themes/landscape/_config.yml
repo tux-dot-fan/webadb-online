@@ -65,7 +65,12 @@ recent_posts_limits: 5
 google_analytics:
 gauges_analytics:
 # Favicon path
-favicon: /favicon.png
+# Replaced the landscape default /favicon.png with the same SVG the
+# main app uses (/favicon.svg), so the browser tab on /blog/* pages
+# shows the same ice-cube icon as webadb.online root. (See
+# public/favicon.svg + public/favicon.ico for the icon itself;
+# this entry only changes the link rel="shortcut icon" href.)
+favicon: /favicon.svg
 # Twitter ID
 twitter:
 fb_admins:

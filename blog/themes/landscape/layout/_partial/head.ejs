@@ -20,7 +20,26 @@
   %>
   <title><% if (title){ %><%= title %> | <% } %><%= config.title %></title>
   <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
-  <%- open_graph({twitter_id: theme.twitter, fb_admins: theme.fb_admins, fb_app_id: theme.fb_app_id}) %>
+  <!-- Custom OG/Twitter block. Replaces landscape's open_graph helper
+       because that one hardcodes config.url + url_for() which double-
+       prefixes /blog/ when our blog lives at /blog/* under webadb.online.
+       We use page.permalink (hexo 8 builds the absolute URL with proper
+       root prefix already) and a hardcoded og:image URL pointing at
+       webadb.online/og-image.png (served from webadb.online root by
+       next export — public/og-image.png). -->
+  <% var pageUrl = (typeof page !== 'undefined' && page.permalink) ? page.permalink : (config.url + '/'); %>
+  <meta property="og:type" content="<%= (typeof is_post === 'function' && is_post()) ? 'article' : 'website' %>">
+  <meta property="og:title" content="<%= page.title ? page.title + ' · ' + config.title : config.title %>">
+  <meta property="og:description" content="<%= page.description || config.description || (page.excerpt && strip_html(page.excerpt)) || config.subtitle %>">
+  <meta property="og:url" content="<%= pageUrl %>">
+  <meta property="og:image" content="<%= config.url.replace(/\/blog$/, '') %>/og-image.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:site_name" content="<%= config.title %>">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="<%= page.title ? page.title + ' · ' + config.title : config.title %>">
+  <meta name="twitter:description" content="<%= page.description || config.description || (page.excerpt && strip_html(page.excerpt)) || config.subtitle %>">
+  <meta name="twitter:image" content="<%= config.url.replace(/\/blog$/, '') %>/og-image.png">
   <% if (config.feed) { %>
     <%- feed_tag() %>
   <% } else if (theme.rss) { %>
@@ -28,6 +47,9 @@
   <% } %>
   <% if (theme.favicon){ %>
     <%- favicon_tag(theme.favicon) %>
+    <link rel="icon" type="image/svg+xml" href="<%= theme.favicon %>">
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
+    <link rel="manifest" href="/site.webmanifest">
   <% } %>
   <% if (config.highlight.enable){ %>
     <%- css('https://cdn.jsdelivr.net/npm/typeface-source-code-pro@0.0.71/index.min.css') %>
