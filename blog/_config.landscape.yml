@@ -1,0 +1,10 @@
+# Landscape theme overrides. This file is merged on top of
+# `themes/landscape/_config.yml` at boot. See Hexo docs:
+# https://hexo.io/docs/configuration#Overriding-Theme-Config
+
+# Google Analytics 4 — same measurement ID as the main Next.js app
+# (app/layout.tsx). landscape's _partial/head.ejs partials
+# google-analytics.ejs when this value is set. The gtag.js script
+# works under our /blog/* relaxed-COEP policy because Google responds
+# with Cross-Origin-Resource-Policy: cross-origin.
+google_analytics: G-Z6XNXQMH3E

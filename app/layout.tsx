@@ -139,6 +139,23 @@ export default function RootLayout({
           }}
         />
         <link rel="canonical" href={SITE_URL} />
+        {/* Google Analytics 4 — measurement ID is the only thing that
+            changes between environments. gtag.js ships CORP cross-origin
+            headers, so it works under the COEP: require-corp policy on
+            the main app. The async + inline pattern matches Google's
+            recommended install (kept verbatim for tooling compatibility). */}
+        <script
+          async
+          src="https://www.googletagmanager.com/gtag/js?id=G-Z6XNXQMH3E"
+        />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-Z6XNXQMH3E');`,
+          }}
+        />
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
