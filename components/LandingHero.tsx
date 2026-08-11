@@ -46,7 +46,7 @@ export function LandingHero() {
           </a>
           <a
             className="landing-cta-link"
-            href="/blog/"
+            href="/blog/2026/08/11/How-to-use-webadb-online/"
           >
             🚀 How to use webadb.online
             <span className="landing-cta-link-arrow" aria-hidden="true">
