@@ -43,3 +43,6 @@ next-env.d.ts
 
 # Auto-generated during build (replaced every `npm run build` via prebuild)
 app/build-info.ts
+
+# Hexo blog build artefacts (regenerated every `npm run build`)
+public/blog/

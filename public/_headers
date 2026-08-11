@@ -35,6 +35,19 @@
 /index.html
   Cache-Control: no-cache
 
+# Blog pages: relax the cross-origin isolation headers so the hexo
+# output (which links to fork-awesome on jsdelivr and to RSS feed
+# endpoints) actually loads. The blog is static content with no
+# SharedArrayBuffer / high-resolution timer needs — losing isolation
+# here costs nothing and avoids dropping the fork-awesome CSS.
+# Browsers treat the blog and the main app as separate top-level
+# documents anyway (different browsing contexts), so this doesn't
+# weaken the main app's isolation.
+/blog/*
+  Cross-Origin-Embedder-Policy: unsafe-none
+  Cross-Origin-Opener-Policy: unsafe-none
+  Cross-Origin-Resource-Policy: same-origin
+
 # Security headers, applied globally.
 /*
   X-Content-Type-Options: nosniff

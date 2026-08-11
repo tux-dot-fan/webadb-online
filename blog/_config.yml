@@ -1,0 +1,110 @@
+# Hexo Configuration
+## Docs: https://hexo.io/docs/configuration.html
+## Source: https://github.com/hexojs/hexo/
+
+# Site
+title: webadb.online blog
+subtitle: 'Run ADB fully in your browser — release notes, deep dives, and field reports.'
+description: 'Engineering notes from building webadb.online: WebUSB + ya-webadb internals, app manager, logcat streaming, and the macOS-style chrome.'
+keywords:
+  - webadb
+  - adb
+  - android
+  - webusb
+  - ya-webadb
+  - cloudflare pages
+author: webadb.online
+language: en
+timezone: 'UTC'
+
+# URL
+## Hosted under /blog/ on webadb.online (Cloudflare Pages serves the Next.js
+## static export which already includes the hexo output under public/blog/).
+url: https://webadb.online/blog
+root: /blog/
+permalink: :year/:month/:day/:title/
+permalink_defaults:
+pretty_urls:
+  trailing_index: true
+  trailing_html: true
+
+# Directory
+## Output goes straight into the Next.js public/ folder so `next build`
+## picks it up on the next `export` pass. Anything we drop into ../public
+## is copied verbatim to ../out at build time.
+source_dir: source
+public_dir: ../public/blog
+tag_dir: tags
+archive_dir: archives
+category_dir: categories
+code_dir: downloads/code
+i18n_dir: :lang
+skip_render:
+
+# Writing
+new_post_name: :title.md
+default_layout: post
+titlecase: false
+external_link:
+  enable: true
+  field: site
+  exclude: ''
+filename_case: 0
+render_drafts: false
+post_asset_folder: false
+relative_link: true
+future: true
+syntax_highlighter: highlight.js
+highlight:
+  line_number: true
+  auto_detect: false
+  tab_replace: ''
+  wrap: true
+  hljs: false
+prismjs:
+  preprocess: true
+  line_number: true
+  tab_replace: ''
+
+# Home page setting
+## Hexo 8's index_generator is the built-in generator that emits the
+## blog home page (post list). It runs unconditionally unless disabled,
+## and writes `<public_dir>/index.html`. Verified against hexo@8.1.2 +
+## hexo-theme-landscape@1.1.0 with `root: /blog/` — the generator picks
+## up `root` automatically and emits `public/blog/index.html` (i.e.
+## `<public_dir>/index.html`, with `<public_dir>` = `../public/blog`).
+##
+## Do NOT create `source/index.md` as a workaround: hexo's page
+## generator sets `page.posts = undefined`, and landscape's index.ejs
+## dereferences `page.posts.each(...)` → throws "Cannot read properties
+## of undefined". Rely on the built-in index_generator instead.
+# (using hexo defaults: path = '', per_page = 10, order_by = -date)
+
+# Category & Tag
+default_category: uncategorized
+category_map:
+tag_map:
+
+# Metadata elements
+meta_generator: true
+
+# Date / Time format
+date_format: YYYY-MM-DD
+time_format: HH:mm:ss
+updated_option: 'mtime'
+
+# Pagination
+per_page: 10
+pagination_dir: page
+
+# Include / Exclude file(s)
+include:
+exclude:
+ignore:
+
+# Extensions
+theme: landscape
+
+# Deployment
+deploy:
+  type: ''

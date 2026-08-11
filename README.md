@@ -52,6 +52,22 @@ Headers (`Cross-Origin-Embedder-Policy: require-corp`, etc.) are set in
 npm run build        # produces ./out (static)
 ```
 
+The build script chains `hexo generate --cwd blog` (writes `public/blog/`)
+into `next build` (Next.js copies `public/` into `out/`). The blog
+therefore ships at `webadb.online/blog/` from the same CF Pages project
+as the main app — no second origin, no second deployment.
+
+Blog posts live in `blog/source/_posts/<slug>.md`. Create one with:
+
+```bash
+./node_modules/.bin/hexo new "My post title" --cwd blog
+```
+
+Hexo 8 dropped the built-in `index_generator`, so `blog/scripts/index-generator.js`
+restores it (post-list home page). If you ever upgrade hexo and it
+re-introduces an index generator, delete that script and the build will
+fall back to the upstream behavior.
+
 ## Deploy to Cloudflare Pages
 
 See **[DEPLOY.md](./DEPLOY.md)** for step-by-step instructions. TL;DR: connect

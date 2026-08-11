@@ -1,8 +1,22 @@
 # Deploying to Cloudflare Pages
 
-This project is a static Next.js export (`output: "export"` in `next.config.mjs`).
-Cloudflare Pages is the right home for it — no server runtime, no Workers, no
-edge functions. Just a CDN serving the `out/` directory.
+This project is a static Next.js export (`output: "export"` in `next.config.mjs`)
+**plus a Hexo blog at `/blog/`**. Cloudflare Pages is the right home for it
+— no server runtime, no Workers, no edge functions. Just a CDN serving
+the `out/` directory.
+
+The custom `npm run build` script runs both stages:
+
+1. `hexo generate --cwd blog` — emits `public/blog/`
+2. `next build` — picks `public/blog/` up as part of its static export
+   (Next.js copies everything under `public/` to `out/` verbatim), so
+   `out/blog/index.html` ships alongside `out/index.html`.
+
+The blog lives under `/blog/` on the same origin. The hexo-generated
+index page inherits a relaxed COEP/COOP policy from `public/_headers`
+(`/blog/*` block) — without it, the landscape theme's fork-awesome
+stylesheet on jsdelivr would be blocked by the cross-origin isolation
+required by `SharedArrayBuffer` on the main app.
 
 ## One-time setup (≈ 5 minutes)
 
