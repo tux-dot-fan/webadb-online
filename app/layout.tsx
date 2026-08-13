@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     template: "%s · WebADB",
   },
   description:
-    "Connect your Android device over USB and run ADB commands — shell, install APKs, transfer files, take screenshots, stream logcat — entirely from your browser. No install, no drivers.",
+    "Browser-based ADB client: full file manager, one-click APK install, multi-window terminal with saved shortcuts, instant device screenshot, live logcat, system monitor, and app manager. No install, no drivers.",
   applicationName: "WebADB",
   keywords: [
     "ADB",
@@ -20,11 +20,21 @@ export const metadata: Metadata = {
     "Android Debug Bridge",
     "WebUSB",
     "browser ADB",
+    "web ADB",
     "APK install",
+    "APK installer",
     "scrcpy alternative",
     "logcat",
     "shell",
+    "terminal",
+    "file manager",
+    "screenshot",
+    "system monitor",
     "WebADB",
+    "no install",
+    "no drivers",
+    "online",
+    "Chrome",
   ],
   authors: [{ name: "webadb.online" }],
   creator: "webadb.online",
@@ -45,7 +55,7 @@ export const metadata: Metadata = {
     url: SITE_URL,
     title: "WebADB — Run ADB fully in your browser",
     description:
-      "Connect your Android device over USB and run ADB commands entirely from your browser. No install, no drivers.",
+      "Browser-based ADB client: full file manager, one-click APK install, multi-window terminal with saved shortcuts, instant device screenshot, live logcat, system monitor, and app manager. No install, no drivers.",
     siteName: "WebADB",
     images: [
       {
@@ -60,7 +70,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "WebADB — Run ADB fully in your browser",
     description:
-      "Connect your Android device over USB and run ADB commands entirely from your browser.",
+      "Browser-based ADB client: full file manager, one-click APK install, multi-window terminal with saved shortcuts, instant device screenshot, live logcat, system monitor, and app manager. No install, no drivers.",
     images: [OG_IMAGE],
   },
   robots: {
@@ -99,7 +109,7 @@ const jsonLd = {
   applicationSubCategory: "Android Debug Bridge Client",
   operatingSystem: "Chrome OS, Windows, macOS, Linux",
   description:
-    "Run ADB commands on your Android device from any modern Chromium-based browser over WebUSB. No install, no drivers.",
+    "Browser-based ADB client: full file manager, one-click APK install, multi-window terminal with saved shortcuts, instant device screenshot, live logcat, system monitor, and app manager. No install, no drivers.",
   url: SITE_URL,
   image: OG_IMAGE,
   offers: {
@@ -108,12 +118,14 @@ const jsonLd = {
     priceCurrency: "USD",
   },
   featureList: [
-    "Shell command execution",
-    "APK installation",
-    "File transfer (upload & download)",
-    "Screenshot capture",
-    "Logcat streaming with ANSI colors",
-    "Installed app management (list, launch, uninstall)",
+    "File manager (browse, upload, download, edit)",
+    "One-click APK install",
+    "Multi-window ADB terminal",
+    "Saved shell shortcuts (commands, scripts, binaries)",
+    "Instant device screenshot",
+    "Live logcat stream with ANSI colors",
+    "System monitor (CPU, memory, battery, storage)",
+    "Installed app manager (list, launch, uninstall)",
     "Wi-Fi ADB enable",
     "Multi-device switching",
   ],
