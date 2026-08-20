@@ -90,6 +90,7 @@ import { SettingsApp }       from "@/components/SettingsApp";
 import { LauncherApp }       from "@/components/LauncherApp";
 import { DashApp }           from "@/components/DashApp";
 import { TextEditorApp }     from "@/components/TextEditorApp";
+import { ScreencastPanel }   from "@/components/ScreencastPanel";
 
 /**
  * The single source of truth for what apps exist. Workspace reads this list
@@ -245,6 +246,51 @@ export const REGISTERED_APPS: AppDefinition[] = [
     launchOnStartup: false,
     allowMultipleWindows: false,
     description: "Push and install an APK file to the device.",
+  },
+  {
+    id: "screencast",
+    title: "Screencast",
+    // TV-style: rounded-rect display with a small "play" triangle.
+    icon: (
+      <svg
+        viewBox="0 0 24 24"
+        width="24"
+        height="24"
+        aria-hidden="true"
+        style={{ display: "block" }}
+      >
+        <rect
+          x="2"
+          y="4"
+          width="20"
+          height="14"
+          rx="2.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+        />
+        <polygon
+          points="10,8 16,12 10,16"
+          fill="currentColor"
+        />
+        <line
+          x1="9"
+          y1="20"
+          x2="15"
+          y2="20"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+        />
+      </svg>
+    ),
+    Component: ScreencastPanel,
+    defaultSize: { width: 480, height: 800 },
+    showInDock: true,
+    launchOnStartup: false,
+    allowMultipleWindows: true,
+    description:
+      "Live screen stream of the device, with mouse + scroll + drag control.",
   },
   {
     id: "wifi",

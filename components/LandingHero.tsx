@@ -33,11 +33,11 @@ export function LandingHero() {
         </p>
         <p className="landing-sub">
           A full file manager, one-click APK install, a multi-window ADB
-          terminal with saved shell shortcuts, an instant device
-          screenshot button, live logcat with ANSI colors, per-core
-          system monitor, and an installed-app manager — all from a
-          single tab in Chrome, Edge, or Opera. No install, no
-          drivers, runs entirely over WebUSB.
+          terminal with saved shell shortcuts, a live device screencast
+          with mouse control, an instant device screenshot button, live
+          logcat with ANSI colors, per-core system monitor, and an
+          installed-app manager — all from a single tab in Chrome, Edge,
+          or Opera. No install, no drivers, runs entirely over WebUSB.
         </p>
         <div className="landing-cta">
           <a className="landing-cta-link" href="/blog/">

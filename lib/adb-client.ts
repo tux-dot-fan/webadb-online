@@ -619,6 +619,106 @@ export class AdbClient {
   }
 
   /**
+   * Start a `screenrecord` process that streams H.264 (annex-B) to stdout.
+   *
+   * `width` / `height` are the encoded frame dimensions (must be even;
+   * `screenrecord` will reject odd sizes). `bitRate` is in bits per
+   * second; the device clamps to a sane minimum (~200 kbps) and maximum
+   * (~device-dependent; usually 20 Mbps) regardless of what we pass.
+   *
+   * `timeLimitSec` is the hard cap `screenrecord` will record before
+   * stopping itself; the maximum value the device accepts is 180 (3 min).
+   * We default to 180 and let the panel restart the process as needed.
+   *
+   * Caller is responsible for consuming the stdout stream (the H.264
+   * byte stream is appended bit-exact, with no container), and for
+   * calling kill() when shutting down. Returns the same shape as
+   * startLogcat for symmetry.
+   */
+  async startScreenrecord(opts: {
+    width: number;
+    height: number;
+    bitRate: number;
+    timeLimitSec?: number;
+  }): Promise<{ kill(): void; stdout: ReadableStream<Uint8Array> }> {
+    const s = this.requireSession();
+    const shell = s.adb.subprocess.shellProtocol;
+    if (!shell || !shell.isSupported) {
+      throw new Error("Device doesn't support Shell V2 protocol");
+    }
+    // Round to even; screenrecord refuses odd dimensions.
+    const w = opts.width & ~1;
+    const h = opts.height & ~1;
+    const timeLimit = Math.min(180, Math.max(1, opts.timeLimitSec ?? 180));
+    const proc = await shell.spawn([
+      "screenrecord",
+      "--output-format=h264",
+      "--size", `${w}x${h}`,
+      "--bit-rate", String(Math.max(200_000, opts.bitRate | 0)),
+      "--time-limit", String(timeLimit),
+      "-",  // "-" means "write to stdout"
+    ]);
+    return {
+      kill: () => {
+        try {
+          void proc.kill();
+        } catch {
+          /* ignore */
+        }
+      },
+      stdout: proc.stdout as ReadableStream<Uint8Array>,
+    };
+  }
+
+  /**
+   * Read the device's current screen size via `wm size`. Returns null if
+   * `wm` isn't available (very old Androids) or the call fails.
+   *
+   * `wm size` reports the natural display size in pixels regardless of
+   * orientation. We use this to map pointer events from the screencast
+   * panel's normalized coordinates to device-pixel coordinates.
+   */
+  async getScreenSize(): Promise<{ width: number; height: number } | null> {
+    const s = this.requireSession();
+    try {
+      const out = await spawnText(s.adb, ["wm", "size"]);
+      // Output looks like:
+      //   Physical size: 1080x2400
+      //   Override size: 1080x2400  (only if user has set one)
+      const match = /Physical size:\s*(\d+)x(\d+)/.exec(out);
+      if (!match) return null;
+      return { width: Number(match[1]), height: Number(match[2]) };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Issue a `input` command on the device. Used by the Screencast panel
+   * to forward pointer events from the canvas to the device.
+   *
+   * `input` is the Android shell command that synthesizes events on
+   * `/dev/input/event*`. It supports `tap`, `swipe`, `keyevent`, and
+   * a few others — we only use the four we need.
+   *
+   * Errors are swallowed; pointer events are best-effort and the user
+   * can always re-tap.
+   */
+  async injectInput(
+    cmd:
+      | { kind: "tap"; x: number; y: number }
+      | { kind: "swipe"; x1: number; y1: number; x2: number; y2: number; durationMs: number }
+      | { kind: "keyevent"; code: number }
+  ): Promise<void> {
+    // Implementation lives in lib/screencast/pipeline.ts — panels
+    // import that module directly because they receive an
+    // `AdbSession` (the ya-webadb wrapper) not an `AdbClient`. This
+    // re-export keeps the public API discoverable from adb-client.
+    const { injectInput: impl } = await import("@/lib/screencast/pipeline");
+    return impl(this.requireSession(), cmd);
+  }
+
+  /**
    * Clear the on-device logcat ring buffer (`logcat -c`). Non-fatal if the
    * device refuses — older Androids without root may reject this.
    */
