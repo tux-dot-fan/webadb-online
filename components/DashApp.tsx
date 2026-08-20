@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   REGISTERED_APPS,
   loadEnabled,
+  saveEnabled,
   type AppDefinition,
 } from "@/lib/app-registry";
 
@@ -31,6 +32,11 @@ interface AppResult {
   title: string;
   icon: ReactNode;
   desc: string;
+  /** Whether this app is currently enabled. Disabled apps still
+   *  appear in search results so users can find and re-enable them;
+   *  clicking a disabled result also re-enables the app before
+   *  launching it. */
+  enabled: boolean;
 }
 
 interface PathResult {
@@ -101,13 +107,14 @@ export function DashApp({
     };
   }, []);
 
-  // Build result set. Apps flagged `alwaysEnabled` are always shown
-  // regardless of the user's enable/disable preferences — that way the
-  // user can search for Settings and re-enable things even if they
-  // disabled everything via the Settings panel.
+  // Build result set. We search ALL registered apps (not just enabled
+  // ones) so the user can find and re-enable apps they've disabled
+  // from the Settings panel — particularly new apps that we ship
+  // after they set up their preferences. Disabled apps still match
+  // and still launch: clicking one both re-enables it and opens a
+  // window.
   const results: Result[] = useMemo(() => {
     const apps: AppResult[] = REGISTERED_APPS
-      .filter((a) => enabledIds.has(a.id) || a.alwaysEnabled === true)
       .filter((a) => fuzzy(`${a.title} ${a.description ?? ""}`, query))
       .map((a) => ({
         kind: "app",
@@ -115,6 +122,7 @@ export function DashApp({
         title: a.title,
         icon: a.icon,
         desc: a.description ?? "",
+        enabled: a.alwaysEnabled === true || enabledIds.has(a.id),
       }));
 
     const pathResults: PathResult[] = paths
@@ -130,7 +138,20 @@ export function DashApp({
   }, [results.length, active]);
 
   const choose = (r: Result) => {
-    if (r.kind === "app") onLaunchApp(r.id);
+    if (r.kind === "app") {
+      // If the user clicked a disabled app, re-enable it first.
+      // This is the recovery path for "I disabled something and now
+      // I can't find it in the Dock" — search is the only way back.
+      if (!r.enabled) {
+        const next = new Set(enabledIds);
+        next.add(r.id);
+        saveEnabled(next);
+        // saveEnabled fires a custom event that Workspace listens to
+        // and will refresh the Dock from, so the icon appears within
+        // a tick of the click landing.
+      }
+      onLaunchApp(r.id);
+    }
     // For path results we just open File Manager — the path itself isn't
     // navigable from here yet; the FM can render a future "open to path" hook.
   };
@@ -175,32 +196,42 @@ export function DashApp({
         {results.length === 0 ? (
           <div className="dash-empty">No matches.</div>
         ) : (
-          results.map((r, i) => (
-            <button
-              key={`${r.kind}:${r.kind === "app" ? r.id : r.path}`}
-              type="button"
-              role="option"
-              aria-selected={i === active}
-              className={`dash-result${i === active ? " is-active" : ""}`}
-              onMouseEnter={() => setActive(i)}
-              onClick={() => choose(r)}
-            >
-              <span className="dash-result-icon" aria-hidden>
-                {r.kind === "app" ? r.icon : "📂"}
-              </span>
-              <span className="dash-result-text">
-                <strong>
-                  {r.kind === "app" ? r.title : r.path}
-                </strong>
-                {r.kind === "app" && r.desc && (
-                  <span className="dash-result-desc">{r.desc}</span>
-                )}
-              </span>
-              <span className="dash-result-kind">
-                {r.kind === "app" ? "App" : "Path"}
-              </span>
-            </button>
-          ))
+          results.map((r, i) => {
+            const disabled =
+              r.kind === "app" && !r.enabled;
+            return (
+              <button
+                key={`${r.kind}:${r.kind === "app" ? r.id : r.path}`}
+                type="button"
+                role="option"
+                aria-selected={i === active}
+                className={`dash-result${i === active ? " is-active" : ""}${
+                  disabled ? " is-disabled" : ""
+                }`}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => choose(r)}
+              >
+                <span className="dash-result-icon" aria-hidden>
+                  {r.kind === "app" ? r.icon : "📂"}
+                </span>
+                <span className="dash-result-text">
+                  <strong>
+                    {r.kind === "app" ? r.title : r.path}
+                  </strong>
+                  {r.kind === "app" && r.desc && (
+                    <span className="dash-result-desc">{r.desc}</span>
+                  )}
+                </span>
+                <span className="dash-result-kind">
+                  {disabled
+                    ? "Disabled — click to enable"
+                    : r.kind === "app"
+                    ? "App"
+                    : "Path"}
+                </span>
+              </button>
+            );
+          })
         )}
       </div>
 

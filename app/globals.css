@@ -2537,6 +2537,17 @@ section.panel .panel-desc {
 .dash-result.is-active {
   background: var(--bg-elev-2);
 }
+.dash-result.is-disabled {
+  /* Dimmed to signal "not in dock", but still clickable — the click
+     handler re-enables the app and opens the window, so it's the
+     escape hatch when a user has disabled something they actually
+     still want. */
+  opacity: 0.6;
+}
+.dash-result.is-disabled .dash-result-kind {
+  color: var(--accent, #4ea1ff);
+  font-weight: 500;
+}
 .dash-result-icon {
   font-size: 1.4em;
   width: 1.5em;
