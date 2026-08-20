@@ -383,6 +383,9 @@ export function loadEnabled(defaults: readonly AppDefinition[]): Set<string> {
   const alwaysIds = new Set(
     defaults.filter((a) => a.alwaysEnabled === true).map((a) => a.id),
   );
+  // Defaults: everything currently registered is in the set. Apps the
+  // user has explicitly disabled are subtracted below.
+  const defaultsIds = new Set(defaults.map((a) => a.id));
   try {
     const raw = localStorage.getItem(ENABLED_STORAGE_KEY);
     if (raw === null) {
@@ -392,8 +395,23 @@ export function loadEnabled(defaults: readonly AppDefinition[]): Set<string> {
     const arr = JSON.parse(raw) as string[];
     const validIds = new Set(defaults.map((a) => a.id));
     const fromStorage = new Set(arr.filter((id) => validIds.has(id)));
-    // Merge: always-on + whatever the user has enabled.
-    return new Set([...alwaysIds, ...fromStorage]);
+    // Merge logic:
+    //   - alwaysEnabled: unconditional
+    //   - everything in defaults that the user hasn't explicitly
+    //     disabled (default = enabled; user can disable via Settings).
+    //   - apps in storage that are still valid (older sessions may
+    //     have explicitly enabled something we no longer ship — we
+    //     drop those to avoid orphans).
+    //
+    // The "absent in storage ⇒ enabled" rule is the important one:
+    // when we ship a new app (e.g. Screencast), users with existing
+    // settings should see it in the Dock by default, not have to
+    // re-enable it from the Settings panel.
+    const result = new Set<string>([...alwaysIds]);
+    for (const id of defaultsIds) {
+      if (fromStorage.has(id)) result.add(id);
+    }
+    return result;
   } catch {
     return new Set([...alwaysIds, ...defaults.map((a) => a.id)]);
   }
