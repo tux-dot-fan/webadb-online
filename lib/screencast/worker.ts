@@ -32,7 +32,7 @@
 //
 // Transferable: `init` and `buffer` are transferred (zero-copy).
 
-import { Muxer, ArrayBufferTarget } from "mp4-muxer";
+import { Muxer, StreamTarget } from "mp4-muxer";
 
 /// <reference lib="webworker" />
 
@@ -48,8 +48,13 @@ interface DedicatedWorkerGlobalScope {
 const workerSelf = self as unknown as DedicatedWorkerGlobalScope;
 
 let streamId: number = -1;
-let muxer: Muxer<ArrayBufferTarget> | null = null;
+let muxer: Muxer<StreamTarget> | null = null;
 let configSent = false;
+let initBytes: ArrayBuffer | null = null;
+// `initBytes` holds the ftyp+moov segment that mp4-muxer writes
+// during the first addVideoChunkRaw call. We post it to the main
+// thread after the first IDR arrives, before posting any media
+// fragments.
 // Whether we've seen at least one IDR keyframe. Until then we hold
 // chunks in `pendingChunks` so we don't mux a delta frame before its
 // reference IDR lands. Without this, browsers will refuse to append
@@ -85,6 +90,8 @@ function teardown(): void {
   pendingChunks = [];
   chunkCounter = 0;
   streamId = -1;
+  cachedCodec = "avc1.42E01E";
+  initBytes = null;
 }
 
 /**
@@ -221,48 +228,69 @@ function splitAnnexBNals(
   return nals;
 }
 
+let cachedCodec: string = "avc1.42E01E"; // set when SPS/PPS first parsed
+
 /**
- * Convert the first chunk into an fMP4 init segment so the main
- * thread can call `sourceBuffer.addInitializationSegment(...)` to
- * arm the decoder.
+ * mp4-muxer's StreamTarget fires `onData` for every chunk it writes
+ * (init segment first, then per-moof+mdat). We buffer the init
+ * segment in `initBytes` until the first IDR keyframe has been
+ * pushed through addVideoChunkRaw; once we know the muxer has
+ * flushed its ftyp+moov, we post it to the main thread.
+ */
+function copyToBuffer(data: Uint8Array): ArrayBuffer {
+  const out = new ArrayBuffer(data.byteLength);
+  new Uint8Array(out).set(data);
+  return out;
+}
+
+function createMuxer(width: number, height: number): Muxer<StreamTarget> {
+  return new Muxer({
+    target: new StreamTarget({
+      onData: (data: Uint8Array) => {
+        const buf = copyToBuffer(data);
+        // First write is the init segment (ftyp + moov); cache it
+        // for the main thread. Subsequent writes are moof+mdat
+        // fragments — forward them as media messages.
+        if (initBytes === null) {
+          initBytes = buf;
+          return;
+        }
+        post(
+          { type: "media", streamId, buffer: buf },
+          [buf],
+        );
+      },
+    }),
+    video: {
+      codec: "avc",
+      width,
+      height,
+      frameRate: assumedFps,
+    },
+    fastStart: "fragmented",
+    firstTimestampBehavior: "offset",
+  });
+}
+
+/**
+ * Post the buffered init segment to the main thread. Called after
+ * the first IDR has been muxed (which guarantees the muxer has
+ * produced ftyp+moov).
  */
 function emitInit(): void {
-  if (!muxer || configSent) return;
-  const target = muxer.target as ArrayBufferTarget;
-  const initBuf = target.buffer as ArrayBuffer;
-  // Strip moov/mdat — only the ftyp+moov (init segment) is wanted
-  // here. mp4-muxer with `fastStart: 'fragmented'` keeps moov at
-  // the head, so the entire buffer up to the first mdat is the init
-  // segment. We locate it by reading the buffer we have so far.
-  // Easiest: call muxer.finalize() to get the full init segment in
-  // a fresh target — but that would lock the muxer. Instead, we
-  // approximate: everything that hasn't yet been sent as a `media`
-  // segment is the init. Since we haven't called addVideoChunkRaw
-  // yet, the buffer IS the init segment.
-  const init = initBuf.slice(0);
-  // Codec string for MSE: e.g. "avc1.640028"
-  const codec = (
-    (muxer as unknown as { videoConfig?: { codec: string } }).videoConfig
-      ?.codec ?? "avc1.42E01E"
-  ).replace(/^avc1\./i, "avc1.");
-  post(
-    {
-      type: "init",
-      streamId,
-      codec,
-      init,
-    },
-    [init],
-  );
-  // Tell the panel which codec we discovered so it can show it
-  // in the "config-parsed" progress step.
+  if (initBytes === null) return;
+  post({
+    type: "init",
+    streamId,
+    codec: cachedCodec,
+    init: initBytes,
+  });
   post({
     type: "progress",
     streamId,
     kind: "config-parsed",
-    detail: codec,
+    detail: cachedCodec,
   });
-  configSent = true;
 }
 
 workerSelf.addEventListener("message", (ev: MessageEvent) => {
@@ -289,18 +317,7 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
     // eagerly with a generic baseline codec; we'll re-emit the init
     // segment once we've parsed the real SPS/PPS. Until then we
     // hold chunks (see `sawKeyframe` below).
-    muxer = new Muxer({
-      target: new ArrayBufferTarget(),
-      video: {
-        codec: "avc",
-        width: msg.width ?? 1280,
-        height: msg.height ?? 720,
-        frameRate: assumedFps,
-      },
-      fastStart: "fragmented",
-      // Allow the muxer to shift timestamps so the first frame is 0.
-      firstTimestampBehavior: "offset",
-    });
+    muxer = createMuxer(msg.width ?? 1280, msg.height ?? 720);
 
     post({ type: "ready", streamId });
     return;
@@ -333,31 +350,25 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
     // Parse SPS/PPS from this chunk if we haven't already. The
     // device sends the codec config inline with the first IDR
     // keyframe, so any chunk containing NAL type 7/8 gets us what
-    // we need. After parsing we rebuild the muxer so it emits the
-    // correct codec string in the init segment.
+    // we need. We do NOT emit the init segment here — we still
+    // need at least one video sample (the IDR itself) for mp4-muxer
+    // to produce a valid ftyp+moov. The init segment is emitted
+    // right after we push the first keyframe through addVideoChunkRaw.
     if (!configSent) {
       const cfg = parseSpsPps(data);
       if (cfg) {
-        // Stash the parsed config on the muxer so we can wire it
-        // through `decoderConfig.description` on the first keyframe.
+        cachedCodec = cfg.codec;
         try {
           muxer?.finalize();
         } catch {
           /* ignore */
         }
-        muxer = new Muxer({
-          target: new ArrayBufferTarget(),
-          video: {
-            codec: "avc",
-            width: msg.width ?? 1280,
-            height: msg.height ?? 720,
-            frameRate: assumedFps,
-          },
-          fastStart: "fragmented",
-          firstTimestampBehavior: "offset",
-        });
+        muxer = createMuxer(msg.width ?? 1280, msg.height ?? 720);
         (muxer as unknown as { _avcConfig?: typeof cfg })._avcConfig = cfg;
-        emitInit();
+        // Mark configSent so we don't re-parse on subsequent chunks.
+        // emitInit() is called below, right after the first keyframe
+        // is pushed through addVideoChunkRaw.
+        configSent = true;
       }
     }
 
@@ -376,15 +387,17 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
       return;
     }
 
-    // First time we hit an IDR, flush everything we held back as
-    // "key" samples (they're actually not all keyframes, but mp4-
-    // muxer requires the first chunk to be a keyframe, and the
-    // browser will discard anything it can't decode — so it's safe
-    // to claim them all as keyframes until we hit a real IDR).
+    // First time we hit an IDR, push every queued chunk (and this one)
+    // through addVideoChunkRaw, then emit the init segment. We have
+    // to do them in this order — mp4-muxer produces the ftyp+moov
+    // atom on the first addVideoChunkRaw call, not before.
     if (!sawKeyframe) {
       const cfgRef = (muxer as unknown as {
         _avcConfig?: { description: Uint8Array };
       })._avcConfig;
+      const meta = cfgRef
+        ? { decoderConfig: { codec: "avc", description: cfgRef.description } }
+        : undefined;
       for (const p of pendingChunks) {
         try {
           muxer.addVideoChunkRaw(
@@ -392,19 +405,27 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
             "key",
             p.timestampUs,
             p.durationUs,
-            cfgRef
-              ? { decoderConfig: { codec: "avc", description: cfgRef.description } }
-              : undefined,
+            meta,
           );
-        } catch {
-          /* ignore */
+        } catch (e) {
+          post({
+            type: "error",
+            streamId,
+            message: `addVideoChunkRaw (pending) failed: ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          });
+          return;
         }
       }
       pendingChunks = [];
       sawKeyframe = true;
+      // Now that the muxer has actually written data, emit the init
+      // segment so the main thread can arm the SourceBuffer.
+      emitInit();
     }
 
-    // Push this chunk.
+    // Push this (the IDR) chunk.
     const cfgRef = (muxer as unknown as {
       _avcConfig?: { description: Uint8Array };
     })._avcConfig;
@@ -428,21 +449,9 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
       return;
     }
 
-    // Pull the most recent moof+mdat out of the muxer and post it.
-    // mp4-muxer's ArrayBufferTarget grows on every addChunk; we
-    // can extract the new bytes by comparing against the previously
-    // sent length. We track that on the muxer object itself.
-    const target = muxer.target as ArrayBufferTarget;
-    const full = (target.buffer as ArrayBuffer | undefined) ?? new ArrayBuffer(0);
-    const lastSent = (muxer as unknown as { _lastSent?: number })._lastSent ?? 0;
-    if (full.byteLength > lastSent) {
-      const slice = full.slice(lastSent);
-      (muxer as unknown as { _lastSent?: number })._lastSent = full.byteLength;
-      post(
-        { type: "media", streamId, buffer: slice },
-        [slice],
-      );
-    }
+    // The muxer fires `onData` synchronously during addVideoChunkRaw
+    // for each moof+mdat it produces; the createMuxer() callback
+    // forwards them as `media` messages. Nothing to do here.
     return;
   }
 
