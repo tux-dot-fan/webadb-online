@@ -254,6 +254,14 @@ function emitInit(): void {
     },
     [init],
   );
+  // Tell the panel which codec we discovered so it can show it
+  // in the "config-parsed" progress step.
+  post({
+    type: "progress",
+    streamId,
+    kind: "config-parsed",
+    detail: codec,
+  });
   configSent = true;
 }
 
@@ -301,6 +309,18 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
   if (msg.type === "chunk") {
     if (!muxer || streamId !== msg.streamId) return;
     const data = new Uint8Array(chunkData());
+
+    // First chunk event (only on the very first chunk ever seen
+    // for this stream). Lets the panel confirm "yes, the device is
+    // actually sending bytes" without having to wait for an IDR.
+    if (chunkCounter === 0) {
+      post({
+        type: "progress",
+        streamId,
+        kind: "first-chunk",
+        detail: `${data.length} bytes`,
+      });
+    }
 
     // Split into NAL units and inspect the leading type. We treat
     // the entire annex-B chunk as a single "chunk" for the muxer

@@ -16,7 +16,7 @@
 // PPI-matching behavior we want.
 
 import type { AdbSession } from "@/lib/adb-client";
-import type { WorkerOutbound } from "./types";
+import type { WorkerOutbound, ProgressKind } from "./types";
 
 /** Bitrate (in bits/second) at the device's native resolution. */
 const NATIVE_BITRATE = 4_000_000; // 4 Mbps, the screenrecord default
@@ -52,6 +52,7 @@ export async function startScreencast(
     devicePpi: number;
     onError: (message: string) => void;
     onReady?: () => void;
+    onProgress?: (kind: ProgressKind, detail?: string) => void;
   },
 ): Promise<PipelineHandle> {
   // ── 1. Encode size + bitrate (PPI-aware) ─────────────────────────────────
@@ -189,6 +190,7 @@ export async function startScreencast(
       // The init segment goes first.
       try {
         sourceBuffer.appendBuffer(msg.init);
+        opts.onProgress?.("init-sent", msg.codec);
       } catch (e) {
         opts.onError(
           `init appendBuffer failed: ${
@@ -204,7 +206,12 @@ export async function startScreencast(
         pendingMedia.push(msg.buffer);
         return;
       }
+      // First-frame event is fired before play() resolves, since we
+      // can't predict when the decoder has decoded enough to produce
+      // a video frame. The `playing` event fires once the first frame
+      // actually paints.
       appendBuffer(msg.buffer);
+      opts.onProgress?.("first-frame", `${msg.buffer.byteLength} bytes`);
       // Try to keep the video element close to live by playing as
       // soon as we have at least one frame buffered. The browser
       // will automatically drop frames if the playback rate can't
@@ -220,6 +227,13 @@ export async function startScreencast(
             /* ignore — first play can throw if not yet seekable */
           }
         }
+        videoEl.addEventListener(
+          "playing",
+          () => {
+            opts.onProgress?.("playing");
+          },
+          { once: true },
+        );
         void videoEl.play().catch(() => {
           /* ignore autoplay errors */
         });
@@ -228,6 +242,10 @@ export async function startScreencast(
     }
     if (msg.type === "error") {
       opts.onError(msg.message);
+      return;
+    }
+    if (msg.type === "progress") {
+      opts.onProgress?.(msg.kind, msg.detail);
       return;
     }
   });
@@ -240,6 +258,8 @@ export async function startScreencast(
     throw new Error("Device doesn't support Shell V2 protocol");
   }
 
+  opts.onProgress?.("spawning", `${encodedWidth}×${encodedHeight} @ ${(bitrate / 1_000).toFixed(0)} kbps`);
+
   const timeLimit = 180; // screenrecord max; restart if user keeps it open
   const proc = await shell.spawn([
     "screenrecord",
@@ -249,6 +269,7 @@ export async function startScreencast(
     "--time-limit", String(timeLimit),
     "-",
   ]);
+  opts.onProgress?.("screenrecord-started");
   killFn = () => {
     try {
       void proc.kill();

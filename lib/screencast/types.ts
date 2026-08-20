@@ -70,6 +70,34 @@ export interface ErrorMsg {
   message: string;
 }
 
+/**
+** Pipeline progress event. Emitted by the pipeline at each
+** transition: spawn → first chunk → first IDR → first frame → first
+** frame rendered. Lets the panel show a step-by-step overlay
+** instead of a single "Starting…" spinner.
+*/
+export type ProgressKind =
+  | "spawning"        // about to call shell.spawn(screenrecord)
+  | "screenrecord-started"  // spawn returned, stdout is open
+  | "first-chunk"     // first H.264 chunk landed in the worker
+  | "config-parsed"   // SPS/PPS extracted, codec known
+  | "init-sent"       // ftyp+moov appended to SourceBuffer
+  | "first-frame"     // first moof+mdat appended
+  | "playing";        // video.play() resolved (first frame on screen)
+
+export interface ProgressMsg {
+  type: "progress";
+  streamId: number;
+  kind: ProgressKind;
+  /** Optional human-readable detail (e.g. "avc1.640028, 360x800"). */
+  detail?: string;
+}
+
 /** All messages that flow through the worker port. */
 export type WorkerInbound = StartMsg | StopMsg | ChunkMsg;
-export type WorkerOutbound = ReadyMsg | InitMsg | MediaMsg | ErrorMsg;
+export type WorkerOutbound =
+  | ReadyMsg
+  | InitMsg
+  | MediaMsg
+  | ErrorMsg
+  | ProgressMsg;

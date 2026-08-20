@@ -4,18 +4,25 @@
 // to a <video> element inside the workspace, with pointer / wheel / drag
 // events forwarded back to the device via `adb shell input` commands.
 //
-// Architecture:
+// Two modes:
 //
-//   device ─adb shell screenrecord─> stdout chunks
-//        ─streamed─> main thread reader
-//        ─posted─> Screencast worker (mp4-muxer fMP4 muxer)
-//        ─fMP4 fragments─> SourceBuffer
-//        ─decoded H.264─> <video>
-//        ─user clicks <video>─> `adb shell input tap`
+//   - Quick Capture (default): straight screenrecord, captures whatever
+//     is currently on screen. One click to start.
 //
-// On resize: tear down the pipeline and start a new one with the
-// new dimensions. screenrecord's --size/--bit-rate are not
-// live-tweakable, so restart-on-resize is the simplest path.
+//   - Pick an app: launcher-style grid with a search box. User types
+//     the app name, sees matching installed packages, clicks one, and
+//     `am start <pkg>` runs on the device before screenrecord kicks in
+//     so the user lands directly inside the chosen app.
+//
+// Both modes report their progress through a multi-step overlay:
+//   1. spawning        adb shell screenrecord --size WxH --bit-rate R
+//   2. first-chunk     device is sending H.264 bytes
+//   3. config-parsed   SPS/PPS extracted, codec known (e.g. avc1.640028)
+//   4. init-sent       ftyp+moov appended to SourceBuffer
+//   5. first-frame     first moof+mdat appended
+//   6. playing         first frame painted on screen
+//
+// If anything stalls, the user sees which step it's stuck on.
 
 import {
   useEffect,
@@ -30,6 +37,8 @@ import {
   getDeviceScreenSize,
   type PipelineHandle,
 } from "@/lib/screencast/pipeline";
+import type { ProgressKind } from "@/lib/screencast/types";
+import { listInstalledPackages, launchPackage } from "@/lib/screencast/apps";
 
 /** Keycodes used by the panel. Full table in Android's KeyEvent.java. */
 const KEYCODE_HOME = 3;
@@ -38,6 +47,17 @@ const KEYCODE_BACK = 4;
 function approxPpi(): number {
   return 440;
 }
+
+/** Human-readable label for each progress step. */
+const PROGRESS_LABELS: Record<ProgressKind, string> = {
+  spawning: "Spawning screenrecord on the device",
+  "screenrecord-started": "Device screenrecord started",
+  "first-chunk": "Receiving H.264 bytes",
+  "config-parsed": "Parsed codec config",
+  "init-sent": "Init segment appended to decoder",
+  "first-frame": "First frame decoded",
+  playing: "Playing",
+};
 
 export function ScreencastPanel({ session }: AppProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -62,8 +82,22 @@ export function ScreencastPanel({ session }: AppProps) {
     width: number;
     height: number;
   } | null>(null);
+  const [progress, setProgress] = useState<{
+    step: ProgressKind;
+    detail?: string;
+    /** ms since the user clicked Start. Lets the user see "stuck
+     *  for 4 s" without having to count. */
+    elapsedMs: number;
+  } | null>(null);
+  /** Pre-stream mode: app picker vs. quick capture. */
+  const [pickMode, setPickMode] = useState<"none" | "picker">("none");
+  const [pickerQuery, setPickerQuery] = useState("");
+  const [pickerResults, setPickerResults] = useState<string[]>([]);
+  const [pickerLoading, setPickerLoading] = useState(false);
+  const [pickerLaunching, setPickerLaunching] = useState<string | null>(null);
 
-  const start = useCallback(async () => {
+  // ── Start the pipeline (no app pre-launch) ─────────────────────────────
+  const startStreaming = useCallback(async () => {
     if (pipelineRef.current) return;
     if (!session) return;
     const video = videoRef.current;
@@ -72,6 +106,8 @@ export function ScreencastPanel({ session }: AppProps) {
 
     setStatus("starting");
     setErrorMsg("");
+    setProgress({ step: "spawning", elapsedMs: 0 });
+    const startTime = performance.now();
 
     if (!screenSizeRef.current) {
       try {
@@ -98,9 +134,17 @@ export function ScreencastPanel({ session }: AppProps) {
         onError: (msg) => {
           setStatus("error");
           setErrorMsg(msg);
+          setProgress(null);
         },
         onReady: () => {
           setStatus("running");
+        },
+        onProgress: (kind, detail) => {
+          setProgress({
+            step: kind,
+            detail,
+            elapsedMs: performance.now() - startTime,
+          });
         },
       });
       pipelineRef.current = handle;
@@ -109,9 +153,63 @@ export function ScreencastPanel({ session }: AppProps) {
         width: handle.encodedWidth,
         height: handle.encodedHeight,
       });
+      // Clear progress once we're playing; the stats line in the
+      // toolbar takes over as the live readout.
+      setProgress(null);
     } catch (e) {
       setStatus("error");
       setErrorMsg(e instanceof Error ? e.message : String(e));
+      setProgress(null);
+    }
+  }, [session]);
+
+  // ── Start the pipeline after launching a specific app ──────────────────
+  const startAfterLaunch = useCallback(
+    async (packageName: string) => {
+      if (!session) return;
+      setPickerLaunching(packageName);
+      try {
+        await launchPackage(session, packageName);
+        // Give the app a moment to render its first frame before
+        // screenrecord starts. 800 ms is enough for most apps to
+        // finish their splash screen; slower apps will just show the
+        // splash in the captured video, which is the right behavior.
+        await new Promise((r) => setTimeout(r, 800));
+      } catch (e) {
+        setErrorMsg(
+          `Couldn't launch ${packageName}: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+        setPickerLaunching(null);
+        return;
+      }
+      setPickerLaunching(null);
+      setPickMode("none");
+      setPickerQuery("");
+      void startStreaming();
+    },
+    [session, startStreaming],
+  );
+
+  // ── Open the picker (prefetch installed packages) ──────────────────────
+  const openPicker = useCallback(async () => {
+    if (!session) return;
+    setPickMode("picker");
+    setPickerQuery("");
+    setPickerLoading(true);
+    try {
+      const pkgs = await listInstalledPackages(session, { includeSystem: false });
+      // Sort alphabetically; the search box will narrow this.
+      setPickerResults(pkgs.sort((a, b) => a.localeCompare(b)));
+    } catch (e) {
+      setErrorMsg(
+        `Couldn't list packages: ${
+          e instanceof Error ? e.message : String(e)
+        }`,
+      );
+    } finally {
+      setPickerLoading(false);
     }
   }, [session]);
 
@@ -120,9 +218,22 @@ export function ScreencastPanel({ session }: AppProps) {
     pipelineRef.current = null;
     setStatus("stopped");
     setStats(null);
+    setProgress(null);
   }, []);
 
-  // ── Pointer / wheel / drag → adb shell input ──────────────────────────────
+  // ── Fuzzy-filter the picker as the user types ──────────────────────────
+  useEffect(() => {
+    if (pickMode !== "picker") return;
+    if (pickerQuery.trim() === "") {
+      // Show first 80 by default to keep the grid cheap.
+      setPickerResults((cur) => cur.slice(0, 80));
+      return;
+    }
+    // Already loaded all in openPicker; we filter the cached list.
+    // (We don't re-fetch on every keystroke.)
+  }, [pickerQuery, pickMode]);
+
+  // ── Pointer / wheel / drag → adb shell input ───────────────────────────
   const sendTap = useCallback(
     (x: number, y: number) => {
       const deviceSize = screenSizeRef.current;
@@ -158,8 +269,6 @@ export function ScreencastPanel({ session }: AppProps) {
     [session],
   );
 
-  // ResizeObserver: restart the pipeline if running and the user
-  // resizes the panel.
   useEffect(() => {
     if (!containerRef.current) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -168,7 +277,7 @@ export function ScreencastPanel({ session }: AppProps) {
       timer = setTimeout(() => {
         if (status === "running" && pipelineRef.current) {
           stop();
-          void start();
+          void startStreaming();
         }
       }, 250);
     });
@@ -177,7 +286,7 @@ export function ScreencastPanel({ session }: AppProps) {
       ro.disconnect();
       if (timer) clearTimeout(timer);
     };
-  }, [status, start, stop]);
+  }, [status, startStreaming, stop]);
 
   useEffect(() => {
     return () => {
@@ -186,7 +295,6 @@ export function ScreencastPanel({ session }: AppProps) {
     };
   }, []);
 
-  // ── Pointer event handlers ────────────────────────────────────────────────
   const onPointerDown = (e: React.PointerEvent<HTMLVideoElement>) => {
     e.preventDefault();
     (e.target as HTMLVideoElement).setPointerCapture(e.pointerId);
@@ -259,6 +367,15 @@ export function ScreencastPanel({ session }: AppProps) {
     e.preventDefault();
   };
 
+  // ── Filtered picker results (lazy fuzzy) ───────────────────────────────
+  const filteredPicker = pickerQuery.trim() === ""
+    ? pickerResults.slice(0, 80)
+    : pickerResults
+        .filter((p) =>
+          p.toLowerCase().includes(pickerQuery.trim().toLowerCase()),
+        )
+        .slice(0, 80);
+
   return (
     <div className="screencast-panel">
       <div className="screencast-toolbar">
@@ -271,14 +388,26 @@ export function ScreencastPanel({ session }: AppProps) {
             ⏹ Stop
           </button>
         ) : (
-          <button
-            type="button"
-            className="screencast-btn screencast-btn-start"
-            onClick={start}
-            disabled={status === "starting"}
-          >
-            ▶ Start
-          </button>
+          <>
+            <button
+              type="button"
+              className="screencast-btn screencast-btn-start"
+              onClick={startStreaming}
+              disabled={status === "starting" || pickerLoading !== false}
+              title="Capture whatever is currently on the device screen."
+            >
+              ▶ Quick Capture
+            </button>
+            <button
+              type="button"
+              className="screencast-btn screencast-btn-pick"
+              onClick={openPicker}
+              disabled={status === "starting" || pickMode === "picker"}
+              title="Pick an installed app to launch first, then capture."
+            >
+              🔎 Pick an app
+            </button>
+          </>
         )}
         {stats && (
           <span className="screencast-stats">
@@ -289,6 +418,7 @@ export function ScreencastPanel({ session }: AppProps) {
           <span className="screencast-error">⚠ {errorMsg}</span>
         )}
       </div>
+
       <div ref={containerRef} className="screencast-canvas-wrap">
         <video
           ref={videoRef}
@@ -300,16 +430,115 @@ export function ScreencastPanel({ session }: AppProps) {
           onWheel={onWheel}
           onContextMenu={onContextMenu}
         />
-        {status !== "running" && (
+
+        {/* ── Multi-step progress overlay (visible while starting) ── */}
+        {status === "starting" && progress && (
+          <div className="screencast-overlay screencast-progress">
+            <div className="screencast-progress-title">
+              Starting…
+            </div>
+            <ol className="screencast-progress-list">
+              {(Object.keys(PROGRESS_LABELS) as ProgressKind[]).map((k) => {
+                const order = (Object.keys(PROGRESS_LABELS) as ProgressKind[]).indexOf(k);
+                const currentOrder = (Object.keys(PROGRESS_LABELS) as ProgressKind[]).indexOf(progress.step);
+                const state =
+                  order < currentOrder
+                    ? "done"
+                    : order === currentOrder
+                    ? "active"
+                    : "todo";
+                return (
+                  <li key={k} className={`screencast-progress-step is-${state}`}>
+                    <span className="screencast-progress-bullet">
+                      {state === "done" ? "✓" : state === "active" ? "•" : " "}
+                    </span>
+                    <span className="screencast-progress-label">
+                      {PROGRESS_LABELS[k]}
+                    </span>
+                    {state === "active" && progress.detail && (
+                      <span className="screencast-progress-detail">
+                        {progress.detail}
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ol>
+            <div className="screencast-progress-elapsed">
+              {(progress.elapsedMs / 1000).toFixed(1)} s
+            </div>
+          </div>
+        )}
+
+        {/* ── Pre-stream app picker ── */}
+        {pickMode === "picker" && (
+          <div className="screencast-overlay screencast-picker">
+            <div className="screencast-picker-header">
+              <input
+                type="text"
+                className="screencast-picker-input"
+                placeholder="Search installed apps…"
+                value={pickerQuery}
+                onChange={(e) => setPickerQuery(e.target.value)}
+                autoFocus
+              />
+              <button
+                type="button"
+                className="screencast-btn screencast-btn-cancel"
+                onClick={() => {
+                  setPickMode("none");
+                  setPickerQuery("");
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+            {pickerLoading ? (
+              <div className="screencast-picker-loading">
+                Listing installed apps…
+              </div>
+            ) : (
+              <>
+                <div className="screencast-picker-hint">
+                  {filteredPicker.length} apps{pickerQuery && ` matching "${pickerQuery}"`}
+                </div>
+                <div className="screencast-picker-grid">
+                  {filteredPicker.map((pkg) => (
+                    <button
+                      key={pkg}
+                      type="button"
+                      className={`screencast-picker-item${
+                        pickerLaunching === pkg ? " is-launching" : ""
+                      }`}
+                      onClick={() => void startAfterLaunch(pkg)}
+                      disabled={pickerLaunching !== null}
+                      title={pkg}
+                    >
+                      <span className="screencast-picker-icon" aria-hidden>
+                        📦
+                      </span>
+                      <span className="screencast-picker-name">
+                        {pkg.split(".").pop()}
+                      </span>
+                      <span className="screencast-picker-pkg">{pkg}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* ── Idle / stopped / error overlay ── */}
+        {status !== "running" && status !== "starting" && pickMode !== "picker" && (
           <div className="screencast-overlay">
             {status === "idle" && (
               <div className="screencast-overlay-text">
-                Press <kbd>Start</kbd> to begin streaming the device's
-                screen. Click and drag to interact.
+                Press <kbd>▶ Quick Capture</kbd> to stream whatever is on
+                the device screen, or <kbd>🔎 Pick an app</kbd> to choose
+                an installed app to launch first. Click and drag on the
+                stream to control the device.
               </div>
-            )}
-            {status === "starting" && (
-              <div className="screencast-overlay-text">Starting…</div>
             )}
             {status === "stopped" && (
               <div className="screencast-overlay-text">Stopped.</div>

@@ -4295,3 +4295,171 @@ button.danger:hover {
 .screencast-overlay-error {
   color: #ff8888;
 }
+
+/* ── Screencast progress overlay (visible during starting…) ─── */
+.screencast-progress {
+  text-align: left;
+  max-width: 380px;
+  padding: 22px 24px 18px;
+}
+.screencast-progress-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 14px;
+  color: rgba(255, 255, 255, 0.95);
+}
+.screencast-progress-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.screencast-progress-step {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  gap: 8px;
+  align-items: baseline;
+  color: rgba(255, 255, 255, 0.45);
+}
+.screencast-progress-step.is-done {
+  color: rgba(180, 230, 180, 0.85);
+}
+.screencast-progress-step.is-active {
+  color: rgba(255, 255, 255, 1);
+  font-weight: 500;
+}
+.screencast-progress-step.is-todo {
+  color: rgba(255, 255, 255, 0.30);
+}
+.screencast-progress-bullet {
+  font-family: var(--mono);
+  text-align: center;
+}
+.screencast-progress-detail {
+  color: var(--accent, #4ea1ff);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.screencast-progress-elapsed {
+  margin-top: 14px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  text-align: right;
+}
+
+/* ── Screencast app picker ───────────────────────────────────── */
+.screencast-picker {
+  flex-direction: column;
+  align-items: stretch;
+  padding: 16px 18px 18px;
+  text-align: left;
+  pointer-events: auto;
+  overflow: hidden;
+}
+.screencast-picker-header {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.screencast-picker-input {
+  flex: 1;
+  padding: 6px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-radius: 6px;
+  font: inherit;
+  font-size: 13px;
+}
+.screencast-picker-input:focus {
+  outline: none;
+  border-color: var(--accent, #4ea1ff);
+}
+.screencast-picker-input::placeholder {
+  color: rgba(255, 255, 255, 0.5);
+}
+.screencast-picker-loading {
+  text-align: center;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 13px;
+  padding: 16px;
+}
+.screencast-picker-hint {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 8px;
+}
+.screencast-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+  align-content: flex-start;
+}
+.screencast-picker-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 8px 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: 8px;
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  text-align: center;
+  transition: background 100ms ease;
+}
+.screencast-picker-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: var(--accent, #4ea1ff);
+}
+.screencast-picker-item:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.screencast-picker-item.is-launching {
+  border-color: var(--accent, #4ea1ff);
+  background: rgba(78, 161, 255, 0.18);
+}
+.screencast-picker-icon {
+  font-size: 24px;
+  margin-bottom: 6px;
+}
+.screencast-picker-name {
+  font-size: 12px;
+  font-weight: 500;
+  margin-bottom: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  white-space: nowrap;
+}
+.screencast-picker-pkg {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.55);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.screencast-btn-pick {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+.screencast-btn-pick:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.20);
+}
+.screencast-btn-cancel {
+  background: rgba(255, 255, 255, 0.10);
+  color: rgba(255, 255, 255, 0.85);
+  padding: 6px 12px;
+}
+.screencast-btn-cancel:hover {
+  background: rgba(255, 255, 255, 0.20);
+}
