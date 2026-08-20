@@ -36,6 +36,10 @@ import { Muxer, StreamTarget } from "mp4-muxer";
 
 /// <reference lib="webworker" />
 
+// All console output from the screencast worker is prefixed with
+// [screencast-worker] so it can be filtered from main-thread output.
+const TAG = "[screencast-worker]";
+
 // See ./types.ts for why we declare this locally instead of pulling
 // in the full `webworker` lib.
 interface DedicatedWorkerGlobalScope {
@@ -253,8 +257,10 @@ function createMuxer(width: number, height: number): Muxer<StreamTarget> {
         // fragments — forward them as media messages.
         if (initBytes === null) {
           initBytes = buf;
+          console.log(TAG, "muxer wrote init segment,", buf.byteLength, "bytes, hex-prefix:", new Uint8Array(buf, 0, Math.min(8, buf.byteLength)));
           return;
         }
+        console.log(TAG, "muxer wrote media fragment,", buf.byteLength, "bytes");
         post(
           { type: "media", streamId, buffer: buf },
           [buf],
@@ -309,6 +315,7 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
   const chunkData = (): ArrayBuffer => msg.data as ArrayBuffer;
 
   if (msg.type === "start") {
+    console.log(TAG, "start", msg.width, "x", msg.height, "streamId:", msg.streamId);
     teardown();
     streamId = msg.streamId;
 
@@ -331,6 +338,7 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
     // for this stream). Lets the panel confirm "yes, the device is
     // actually sending bytes" without having to wait for an IDR.
     if (chunkCounter === 0) {
+      console.log(TAG, "first chunk,", data.length, "bytes, hex-prefix:", data.subarray(0, Math.min(8, data.length)));
       post({
         type: "progress",
         streamId,
@@ -346,6 +354,9 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
     const nals = splitAnnexBNals(data);
     if (nals.length === 0) return;
     const hasIdr = nals.some((n) => n.type === 5);
+    if (chunkCounter === 0 || chunkCounter % 30 === 0) {
+      console.log(TAG, "chunk", chunkCounter, "size:", data.length, "nal-count:", nals.length, "nal-types:", nals.map((n) => n.type).slice(0, 12).join(","), "hasIdr:", hasIdr);
+    }
 
     // Parse SPS/PPS from this chunk if we haven't already. The
     // device sends the codec config inline with the first IDR
@@ -357,6 +368,7 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
     if (!configSent) {
       const cfg = parseSpsPps(data);
       if (cfg) {
+        console.log(TAG, "parsed SPS/PPS, codec:", cfg.codec, "description-bytes:", cfg.description.byteLength);
         cachedCodec = cfg.codec;
         try {
           muxer?.finalize();
@@ -420,6 +432,7 @@ workerSelf.addEventListener("message", (ev: MessageEvent) => {
       }
       pendingChunks = [];
       sawKeyframe = true;
+      console.log(TAG, "first IDR, flushed", pendingChunks.length, "pending chunks");
       // Now that the muxer has actually written data, emit the init
       // segment so the main thread can arm the SourceBuffer.
       emitInit();

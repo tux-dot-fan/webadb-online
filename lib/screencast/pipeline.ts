@@ -18,6 +18,12 @@
 import type { AdbSession } from "@/lib/adb-client";
 import type { WorkerOutbound, ProgressKind } from "./types";
 
+// All console output from the screencast pipeline is prefixed with
+// [screencast] so it can be filtered easily in DevTools. We log
+// every pipeline transition and every error path so the user can
+// see what's happening even when the on-screen UI is stuck.
+const TAG = "[screencast]";
+
 /** Bitrate (in bits/second) at the device's native resolution. */
 const NATIVE_BITRATE = 4_000_000; // 4 Mbps, the screenrecord default
 /** Floor so even a 200-px panel gets a usable stream. */
@@ -82,11 +88,13 @@ export async function startScreencast(
   videoEl.playsInline = true;
 
   const mediaSource = new MediaSource();
+  console.log(TAG, "MediaSource created, initial state:", mediaSource.readyState);
   // Attach MediaSource to the <video> via createObjectURL so the
   // browser wires the SourceBuffer updates back to the element.
   // We capture the URL but revoke it on stop.
   const objectUrl = URL.createObjectURL(mediaSource);
   videoEl.src = objectUrl;
+  console.log(TAG, "video.src set, video dimensions:", videoEl.clientWidth, "x", videoEl.clientHeight);
 
   let sourceBuffer: SourceBuffer | null = null;
   let mediaSourceOpen = false;
@@ -105,9 +113,17 @@ export async function startScreencast(
     }
     mediaSource.addEventListener("sourceopen", () => {
       mediaSourceOpen = true;
+      console.log(TAG, "MediaSource sourceopen event fired, readyState:", mediaSource.readyState);
       resolve();
     });
-    mediaSource.addEventListener("error", () => {
+    mediaSource.addEventListener("sourceended", () => {
+      console.log(TAG, "MediaSource sourceended");
+    });
+    mediaSource.addEventListener("sourceclose", () => {
+      console.log(TAG, "MediaSource sourceclose");
+    });
+    mediaSource.addEventListener("error", (ev) => {
+      console.error(TAG, "MediaSource error event", ev, "readyState:", mediaSource.readyState);
       opts.onError(`MediaSource error: ${mediaSource.readyState}`);
     });
   });
@@ -159,7 +175,11 @@ export async function startScreencast(
 
   worker.addEventListener("message", async (ev: MessageEvent<WorkerOutbound>) => {
     const msg = ev.data;
-    if (msg.streamId !== streamId) return;
+    if (msg.streamId !== streamId) {
+      console.warn(TAG, "ignoring stale message", msg.type, msg.streamId, "!=", streamId);
+      return;
+    }
+    console.log(TAG, "← worker message:", msg.type, "streamId:", msg.streamId);
     if (msg.type === "ready") {
       // Worker is initialized. We'll start spawning screenrecord
       // once MediaSource is open.
@@ -167,6 +187,7 @@ export async function startScreencast(
       return;
     }
     if (msg.type === "init") {
+      console.log(TAG, "init segment received, codec:", msg.codec, "bytes:", msg.init.byteLength, "hex-prefix:", new Uint8Array(msg.init, 0, Math.min(8, msg.init.byteLength)));
       // Wait for MediaSource to be open before adding the buffer.
       await sourceOpenPromise;
       if (stopRequested) return;
@@ -174,7 +195,9 @@ export async function startScreencast(
         sourceBuffer = mediaSource.addSourceBuffer(
           `video/mp4; codecs="${msg.codec}"`,
         );
+        console.log(TAG, "addSourceBuffer succeeded, codec:", msg.codec);
       } catch (e) {
+        console.error(TAG, "addSourceBuffer FAILED", msg.codec, e);
         opts.onError(
           `addSourceBuffer failed (codec ${msg.codec}): ${
             e instanceof Error ? e.message : String(e)
@@ -182,16 +205,22 @@ export async function startScreencast(
         );
         return;
       }
-      sourceBuffer.addEventListener("error", () => {
+      sourceBuffer.addEventListener("error", (ev) => {
+        console.error(TAG, "SourceBuffer error event", ev);
         opts.onError(
           `SourceBuffer error (updating=${sourceBuffer?.updating})`,
         );
       });
+      sourceBuffer.addEventListener("updateend", () => {
+        console.log(TAG, "SourceBuffer updateend, buffered:", sourceBuffer?.buffered.length, "timeRanges:", sourceBuffer?.buffered.length ? `${sourceBuffer.buffered.start(0).toFixed(2)} - ${sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1).toFixed(2)}` : "[]");
+      });
       // The init segment goes first.
       try {
         sourceBuffer.appendBuffer(msg.init);
+        console.log(TAG, "init appendBuffer called,", msg.init.byteLength, "bytes");
         opts.onProgress?.("init-sent", msg.codec);
       } catch (e) {
+        console.error(TAG, "init appendBuffer FAILED", e);
         opts.onError(
           `init appendBuffer failed: ${
             e instanceof Error ? e.message : String(e)
@@ -201,6 +230,7 @@ export async function startScreencast(
       return;
     }
     if (msg.type === "media") {
+      console.log(TAG, "media chunk received,", msg.buffer.byteLength, "bytes, sourceBuffer:", !!sourceBuffer, "pendingMedia.length:", pendingMedia.length);
       // If the SourceBuffer isn't ready yet, queue; otherwise append.
       if (!sourceBuffer) {
         pendingMedia.push(msg.buffer);
@@ -230,17 +260,20 @@ export async function startScreencast(
         videoEl.addEventListener(
           "playing",
           () => {
+            console.log(TAG, "video.playing event fired");
             opts.onProgress?.("playing");
           },
           { once: true },
         );
-        void videoEl.play().catch(() => {
+        void videoEl.play().catch((e) => {
+          console.warn(TAG, "videoEl.play() rejected:", e);
           /* ignore autoplay errors */
         });
       }
       return;
     }
     if (msg.type === "error") {
+      console.error(TAG, "worker error:", msg.message);
       opts.onError(msg.message);
       return;
     }
@@ -248,6 +281,12 @@ export async function startScreencast(
       opts.onProgress?.(msg.kind, msg.detail);
       return;
     }
+  });
+  worker.addEventListener("error", (ev) => {
+    console.error(TAG, "worker error event:", ev);
+  });
+  worker.addEventListener("messageerror", (ev) => {
+    console.error(TAG, "worker messageerror event:", ev);
   });
 
   // ── 4. Spawn screenrecord on the device ──────────────────────────────────
@@ -259,6 +298,7 @@ export async function startScreencast(
   }
 
   opts.onProgress?.("spawning", `${encodedWidth}×${encodedHeight} @ ${(bitrate / 1_000).toFixed(0)} kbps`);
+  console.log(TAG, "spawning screenrecord", { width: encodedWidth, height: encodedHeight, bitrate });
 
   const timeLimit = 180; // screenrecord max; restart if user keeps it open
   const proc = await shell.spawn([
@@ -269,6 +309,7 @@ export async function startScreencast(
     "--time-limit", String(timeLimit),
     "-",
   ]);
+  console.log(TAG, "screenrecord spawned, getting stdout reader");
   opts.onProgress?.("screenrecord-started");
   killFn = () => {
     try {
@@ -288,21 +329,33 @@ export async function startScreencast(
 
   // ── 5. Pump stdout → worker chunks ───────────────────────────────────────
   const reader = (proc.stdout as unknown as ReadableStream<Uint8Array>).getReader();
+  console.log(TAG, "stdout reader acquired, starting read loop");
+  let chunksPosted = 0;
+  let bytesPosted = 0;
   (async () => {
     try {
       while (!stopRequested) {
         const { value, done } = await reader.read();
-        if (done) break;
+        if (done) {
+          console.log(TAG, "stdout done, chunks posted:", chunksPosted, "bytes:", bytesPosted);
+          break;
+        }
         if (value && value.byteLength > 0) {
           const buf = value.buffer.slice(
             value.byteOffset,
             value.byteOffset + value.byteLength,
           );
+          chunksPosted++;
+          bytesPosted += buf.byteLength;
           worker.postMessage({ type: "chunk", streamId, data: buf }, [buf]);
+          if (chunksPosted === 1 || chunksPosted % 30 === 0) {
+            console.log(TAG, "→ worker chunk", chunksPosted, "size:", buf.byteLength, "total bytes:", bytesPosted);
+          }
         }
       }
     } catch (e) {
       if (!stopRequested) {
+        console.error(TAG, "stdout read loop failed:", e);
         opts.onError(
           `screencast read loop failed: ${
             e instanceof Error ? e.message : String(e)
