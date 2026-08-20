@@ -1,4 +1,86 @@
+# ── robots.txt for webadb.online ─────────────────────────────────────────────
+#
+# Three sections:
+#
+#   1. Classic crawl rules — what each well-behaved web crawler is
+#      allowed to fetch. We allow everything (no /admin paths exist,
+#      and the dashboard renders client-side so crawlers only see the
+#      landing page + blog).
+#
+#   2. AI bot policy — explicit directives for the AI-scraping bots
+#      that read robots.txt to decide what to train on / cite. We
+#      ALLOW training-use bots (GPTBot, ClaudeBot, Google-Extended,
+#      CCBot, PerplexityBot, anthropic-ai, Applebot-Extended) and
+#      explicitly cite llms.txt as the AI-optimized surface for
+#      structured consumption. Block the legacy, ill-behaved scrapers
+#      that don't respect crawl-delay or canonical hints.
+#
+#   3. Sitemap pointers — to the HTML sitemap (humans) and the
+#      llms.txt / llms-full.txt (AI agents). Putting all three in one
+#      file means an agent that fetches robots.txt and parses Sitemap
+#      directives can immediately discover the structured surface.
+#
+# Last reviewed: 2026-08-20.
+
+# ── 1. Default ──────────────────────────────────────────────────────────────
 User-agent: *
 Allow: /
+Disallow: /_next/
+# AI bots that ignore crawl-delay or ship known-bad UA strings — block
+# them so they don't add to the firehose without giving us a fair
+# signal. Anything legitimate honors the policy above.
 
+# ── 2. AI-specific ──────────────────────────────────────────────────────────
+# OpenAI: training + browsing. Both opted-in.
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+# Anthropic: training. ClaudeBot respects robots.txt.
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Claude-Web
+Allow: /
+
+# Google AI training (separate from Googlebot indexing). Allows our
+# content into Gemini training + Vertex grounding datasets.
+User-agent: Google-Extended
+Allow: /
+
+# Common Crawl — used to train many open models.
+User-agent: CCBot
+Allow: /
+
+# Perplexity — cite + index.
+User-agent: PerplexityBot
+Allow: /
+
+# Apple Intelligence — opt-in via Applebot-Extended.
+User-agent: Applebot-Extended
+Allow: /
+
+# anthropic-ai — training opt-in (separate from ClaudeBot indexer).
+User-agent: anthropic-ai
+Allow: /
+
+# Meta AI training scraper (honors robots.txt as of 2024).
+User-agent: Meta-ExternalAgent
+Allow: /
+
+# Bytespider / TikTok — no opt-in by default. Block explicitly.
+User-agent: Bytespider
+Disallow: /
+
+User-agent: TikTokSpider
+Disallow: /
+
+# ── 3. Sitemaps + AI-optimized surfaces ─────────────────────────────────────
 Sitemap: https://webadb.online/sitemap.xml
+# AI-optimized content surfaces (Markdown summary + full prose).
+# Defined in llms.txt / llms-full.txt at the site root; see those
+# files for the actual content.
+Sitemap: https://webadb.online/llms.txt
+Sitemap: https://webadb.online/llms-full.txt

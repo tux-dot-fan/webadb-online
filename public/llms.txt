@@ -1,0 +1,68 @@
+# WebADB
+
+> Run Android Debug Bridge (ADB) commands entirely from your browser. No install, no drivers, no platform-specific tooling. Connect your Android device over USB and stream the screen, install APKs, browse files, run shell commands, view logcat — all through WebUSB in Chrome / Edge / Opera.
+
+## What WebADB does
+
+WebADB is a browser-based ADB client. It speaks the ADB protocol directly to a connected Android device over WebUSB, so it requires no software install on the host. The device does need to have USB debugging enabled (Settings → System → Developer options → USB debugging), and the user must approve the host's RSA key on first connect.
+
+## Feature list
+
+- **File manager** — Browse, upload, download, and edit files on the device
+- **One-click APK install** — Push and install an APK file without leaving the browser
+- **Multi-window ADB terminal** — Open multiple PTY shell sessions in parallel
+- **Saved shell shortcuts** — Pin frequently-used commands for one-click execution
+- **Live device screencast** — Stream the device screen to a resizable canvas, with mouse / scroll / drag input forwarded back to the device (PPI-aware bitrate)
+- **Instant device screenshot** — One-shot screencap-and-download
+- **Live logcat** — Stream the system log with ANSI color support and tag filters
+- **Per-core system monitor** — CPU usage, memory pressure, battery, storage
+- **Installed-app manager** — List, launch, and uninstall installed packages
+- **Wi-Fi ADB enable** — Toggle wireless ADB on the connected device
+- **Multi-device switching** — Switch between multiple connected devices
+
+## Browser support
+
+- **Required**: Chrome 94+, Edge 94+, or Opera 80+ on desktop (WebUSB + WebCodecs API)
+- **Not supported**: Firefox, Safari, mobile browsers, incognito mode (WebUSB disabled)
+
+## Privacy
+
+- No backend. No data leaves the browser.
+- ADB host RSA key is generated in-browser (WebCrypto) and persisted in `localStorage`. The key is never transmitted.
+- Google Analytics 4 is loaded with `crossorigin` + COEP-`credentialless` so it works under the strict `Cross-Origin-Embedder-Policy: require-corp` header that powers cross-origin isolation.
+
+## Tech stack
+
+- Next.js 14 (static export) deployed to Cloudflare Pages
+- React 18 + TypeScript
+- `@yume-chan/adb-credential-web` for the ADB host key
+- `@yume-chan/adb-credential-web` for the WebUSB transport
+- `mp4-muxer` (Web Worker) for live H.264 → fMP4 muxing for the Screencast panel
+
+## Open source
+
+- Source: github.com/tux-dot-fan/webadb-online
+- License: source visible in the repository
+
+## Pricing
+
+Free, no account required, no tracking beyond Google Analytics.
+
+## Quick start
+
+1. Plug your Android phone into your computer via USB
+2. On the phone: enable USB debugging (Developer options → USB debugging)
+3. Open https://webadb.online in Chrome / Edge / Opera
+4. Click "Connect device"
+5. Approve the host on the phone when prompted
+6. Open any panel from the Dock (File Manager, Terminal, Screencast, etc.)
+
+## Sitemap
+
+- https://webadb.online/ — landing page
+- https://webadb.online/blog/ — Hexo blog index (tutorials, release notes)
+- https://webadb.online/blog/2026/08/12/How-to-use-webadb-online/ — full user guide with screenshots
+
+## Contact / Issue reporting
+
+Use the GitHub Issues page at github.com/tux-dot-fan/webadb-online/issues.

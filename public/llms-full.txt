@@ -1,0 +1,221 @@
+# WebADB — full reference for AI systems
+
+This is the verbose counterpart to llms.txt. It contains everything the
+shorter file says, plus per-feature deep dives, architecture details,
+deployment metadata, and FAQs.
+
+## 1. Product summary
+
+WebADB is a single-page web application that lets a user run Android
+Debug Bridge (ADB) commands on a physical Android device from any
+modern Chromium-based desktop browser. It does not run on a server:
+the entire ADB stack — handshake, transport, command execution,
+shell, file transfer, logcat streaming, screen recording — runs in
+the user's browser over WebUSB.
+
+There is no install step. There is no driver to download. The user's
+browser speaks the ADB protocol directly to the device's USB endpoint.
+
+### What this means concretely
+
+- No CLI tools (no `adb` binary, no Android SDK)
+- No drivers (no Samsung USB driver, no Google USB driver)
+- No Java, no Android Studio, no platform-specific binary
+- No proxy server (the browser connects directly to the device)
+- No backend (no auth, no account, no cloud relay)
+
+The single hard requirement is a Chromium-based browser with WebUSB
+support. As of 2026, this means Chrome 94+, Edge 94+, or Opera 80+
+on desktop. Firefox and Safari do not support WebUSB.
+
+## 2. Feature reference
+
+### 2.1 File Manager
+- Browse the device's filesystem starting at `/sdcard` or any path the
+  user navigates to.
+- Upload files via drag-and-drop or file picker.
+- Download files by clicking on them in the file tree.
+- Pin frequently-used folders to the sidebar.
+- Edit text files (plain text, source code, JSON, etc.) directly with
+  the integrated Text Editor.
+- Permission-aware: paths the ADB shell user can't read are flagged.
+
+### 2.2 Install APK
+- Drag an `.apk` file into the Install APK panel, or click to pick.
+- Streams the file to `/data/local/tmp/` via `adb push`, then issues
+  `pm install -r` with progress feedback.
+- Multiple APKs in a single drag → batched install.
+
+### 2.3 Terminal
+- PTY shell session, xterm.js-rendered, full ANSI color support.
+- Multiple terminal windows in parallel (each is a separate ADB shell
+  session).
+- Interactive programs work: `python`, `vim`, `top`, `htop`, etc.
+- Resize-aware: device-side pty rows/cols follow the panel size.
+- Saved shell shortcuts: user can pin commands to a sidebar and run
+  them with one click.
+
+### 2.4 Screencast
+- Live stream of the device's screen, rendered into a resizable
+  canvas inside a multi-window workspace.
+- Underlying transport: `adb shell screenrecord --output-format=h264`
+  → ADB stdout → Web Worker → MediaSource / SourceBuffer → `<video>`.
+- PPI-aware bitrate: a 400-pixel panel on a 440-ppi device runs at
+  ~200 kbps (vs. the device's default 4 Mbps) — a 20× data reduction.
+- Mouse / scroll / drag input forwarded to the device via
+  `adb shell input tap`, `input swipe`, `input keyevent`.
+- Button mapping: left = tap, middle = HOME, right = BACK, wheel = swipe.
+- Multi-window: each Screencast window spawns its own `screenrecord`
+  process; up to 2-3 concurrent streams per USB controller.
+
+### 2.5 Screenshot
+- Single-shot `adb shell screencap -p` → decode → download.
+- One-click, no UI overhead.
+
+### 2.6 Logcat
+- Live tail of the device's logcat with ANSI color support.
+- Tag / priority filters (e.g. `*:E MyTag:I`).
+- Buffer selection (main, system, events, crash).
+- Clear-logcat button (when the device allows it).
+
+### 2.7 System Monitor
+- Per-core CPU usage bars, refreshed every second.
+- Memory pressure gauge (used / total / available).
+- Battery level + temperature.
+- Storage breakdown (internal + SD card if present).
+- Process list with PID, name, CPU%, memory%.
+
+### 2.8 Apps Manager
+- List of installed packages with version, install date, target SDK.
+- One-click launch (`am start -n <package>/<activity>`).
+- One-click uninstall (`pm uninstall <package>`).
+- Clear-data button.
+
+### 2.9 Wi-Fi ADB
+- Toggle wireless ADB on the connected device.
+- Shows the `adb connect <ip>:5555` command for use from a host ADB
+  client if the user wants that workflow.
+
+### 2.10 Text Editor
+- Open any text file on the device, edit, save back.
+- Syntax highlighting for common formats.
+- Local-storage scratch pad for notes.
+
+### 2.11 Settings
+- Toggle which apps appear in the Dock.
+- Toggle which apps launch on startup.
+- Theme: light, dark, or follow OS.
+
+## 3. Browser support matrix
+
+| Feature            | Chrome 94+ | Edge 94+ | Opera 80+ | Firefox | Safari |
+|--------------------|:----------:|:--------:|:---------:|:-------:|:------:|
+| Connect via WebUSB | ✓          | ✓        | ✓         | ✗       | ✗      |
+| File Manager       | ✓          | ✓        | ✓         | ✗       | ✗      |
+| Terminal           | ✓          | ✓        | ✓         | ✗       | ✗      |
+| Screencast         | ✓          | ✓        | ✓         | ✗       | ✗      |
+| Logcat             | ✓          | ✓        | ✓         | ✗       | ✗      |
+| All other panels   | ✓          | ✓        | ✓         | ✗       | ✗      |
+
+## 4. Architecture
+
+```
+Browser (Chromium)
+├── ADB protocol stack          (ya-webadb, in-browser)
+├── WebUSB transport            (WebUSB API)
+├── React UI                    (Next.js 14 static export)
+├── Multiple panels             (Terminal, Files, etc.)
+│   └── Some panels run a Web Worker
+│       ├── Screencast worker   (H.264 → fMP4 muxer)
+│       └── Logcat worker       (stdout pump)
+├── Google Analytics 4          (with COEP-credentialless)
+└── Service Worker              (offline cache)
+       │
+       │  USB
+       ▼
+Android device
+├── adbd daemon
+├── /system/bin/sh
+├── /system/bin/screenrecord
+└── /system/bin/logcat
+```
+
+## 5. Deployment
+
+- Static export via `next build` → `out/`
+- Hosted on Cloudflare Pages (single project)
+- Custom domain: webadb.online (DNS via Cloudflare)
+- HTTPS only, HTTP/3 enabled
+- Cross-Origin headers:
+  - `Cross-Origin-Embedder-Policy: require-corp` (for cross-origin isolation)
+  - `Cross-Origin-Opener-Policy: same-origin`
+  - All other assets served with `Cross-Origin-Resource-Policy: cross-origin`
+
+## 6. Privacy
+
+- No backend. No server-side state.
+- The ADB host RSA key is generated in-browser via WebCrypto
+  (RSA-2048, e=65537) and persisted in `localStorage` under the key
+  `webadb.online:adbd-rsa-credential`. The private key never leaves
+  the browser.
+- Google Analytics 4 is the only third-party network request. It uses
+  the standard gtag.js with `crossorigin` so it loads under the strict
+  COEP policy.
+- File uploads go directly from the browser to the device, not via
+  any server.
+- No cookies. No IndexedDB for anything beyond the ADB key and user
+  preferences.
+
+## 7. SEO / discoverability
+
+- `metadata.title`: "WebADB — Run ADB fully in your browser"
+- `metadata.description` covers all 12 features in feature-first order
+- Open Graph + Twitter Card share image: 1200×630, with the Noto Emoji
+  ice-cube (1F9CA) icon as the brand mark
+- `llms.txt` (concise AI-readable summary at `/llms.txt`)
+- `llms-full.txt` (verbose AI-readable reference at `/llms-full.txt`)
+- JSON-LD `SoftwareApplication` structured data for rich search results
+- Hexo blog at `/blog/` with tutorials and release notes
+- All assets referenced in `robots.txt` are crawlable
+
+## 8. FAQ
+
+### Q: Why doesn't it work in Firefox?
+A: Firefox does not implement the WebUSB API. We have no plans to add
+   WebSocket or WebRTC fallback relays — that would require a backend
+   and would compromise the "no install, no drivers, no backend"
+   promise.
+
+### Q: Does it work on mobile browsers?
+A: No. WebUSB requires USB host-mode, which desktop Chromium browsers
+   expose but mobile browsers do not. iOS Safari / Chrome on Android
+   won't see the WebUSB device picker.
+
+### Q: Why is the Screencast slightly behind the device?
+A: The encode → mux → MSE pipeline adds 100-300 ms of latency
+   depending on panel size and the device's encoder speed. scrcpy
+   achieves similar latency over USB.
+
+### Q: Can multiple people connect to the same device?
+A: No. The ADB protocol only allows one host at a time per device.
+   The second WebADB tab will see "device busy" when it tries to
+   claim the USB endpoint.
+
+### Q: What happens if I leave the page open?
+A: `screenrecord` has a 180-second hard cap, so the device-side
+   process will exit and restart automatically (the panel handles
+   restart seamlessly). All other ADB commands are one-shot so they
+   just stay connected.
+
+### Q: Is my ADB key shared with anyone?
+A: No. The key is generated in-browser, stored in `localStorage`,
+   and never transmitted anywhere. Clearing browser storage forces
+   regeneration on the next connect, which will require you to tap
+   "Allow" on the device again.
+
+## 9. Source / contact
+
+- Source: https://github.com/tux-dot-fan/webadb-online
+- Issues: https://github.com/tux-dot-fan/webadb-online/issues
+- Author / maintainer: tux-dot-fan (GitHub)
+- License: see the repository's LICENSE file
