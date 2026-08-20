@@ -1,26 +1,21 @@
 // ── Screencast Panel ─────────────────────────────────────────────────────────
 //
 // The 12th dock app. Streams the connected Android device's live screen
-// to a <canvas> in the workspace, with pointer / wheel / drag events
-// forwarded back to the device via `adb shell input` commands.
+// to a <video> element inside the workspace, with pointer / wheel / drag
+// events forwarded back to the device via `adb shell input` commands.
 //
 // Architecture:
 //
 //   device ─adb shell screenrecord─> stdout chunks
 //        ─streamed─> main thread reader
-//        ─posted─> Screencast worker (VideoDecoder)
-//        ─ImageBitmap─> panel onFrame
-//        ─drawImage─> <canvas>
+//        ─posted─> Screencast worker (mp4-muxer fMP4 muxer)
+//        ─fMP4 fragments─> SourceBuffer
+//        ─decoded H.264─> <video>
+//        ─user clicks <video>─> `adb shell input tap`
 //
-//   <canvas> pointer events
-//        ─tap / swipe / keyevent─> client.injectInput
-//        ─`adb shell input …`─> device
-//
-// On resize: the panel tears down the pipeline and starts a new one
-// with the new dimensions. screenrecord's --size/--bit-rate are not
-// live-tweakable, so restart-on-resize is the simplest path. The
-// 100-300 ms downtime is barely visible to the user because the
-// pipeline is async and the canvas just freezes for that long.
+// On resize: tear down the pipeline and start a new one with the
+// new dimensions. screenrecord's --size/--bit-rate are not
+// live-tweakable, so restart-on-resize is the simplest path.
 
 import {
   useEffect,
@@ -40,24 +35,15 @@ import {
 const KEYCODE_HOME = 3;
 const KEYCODE_BACK = 4;
 
-/**
- * Estimate the device's PPI from `wm size` + a hardcoded guess about
- * the diagonal. Real Android doesn't expose density via adb without
- * `wm density`, so we approximate. Modern phones are 380-500 ppi, so
- * 440 is a reasonable middle.
- */
 function approxPpi(): number {
   return 440;
 }
 
 export function ScreencastPanel({ session }: AppProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const pipelineRef = useRef<PipelineHandle | null>(null);
   const screenSizeRef = useRef<{ width: number; height: number } | null>(null);
-  // Drag state. We use refs (not state) because the value changes
-  // many times per second and re-rendering on every move would tear
-  // the canvas.
   const dragRef = useRef<{
     active: boolean;
     startX: number;
@@ -77,20 +63,16 @@ export function ScreencastPanel({ session }: AppProps) {
     height: number;
   } | null>(null);
 
-  // ── Start / stop the pipeline ────────────────────────────────────────────
   const start = useCallback(async () => {
-    if (pipelineRef.current) return; // already running
+    if (pipelineRef.current) return;
     if (!session) return;
-    const canvas = canvasRef.current;
+    const video = videoRef.current;
     const container = containerRef.current;
-    if (!canvas || !container) return;
+    if (!video || !container) return;
 
     setStatus("starting");
     setErrorMsg("");
 
-    // Fetch the device's physical screen size for coord mapping. We
-    // do this lazily (not in pipeline.ts) because the panel can
-    // re-use the result across resizes.
     if (!screenSizeRef.current) {
       try {
         const sz = await getDeviceScreenSize(session);
@@ -101,39 +83,18 @@ export function ScreencastPanel({ session }: AppProps) {
     }
     const deviceSize = screenSizeRef.current ?? { width: 1080, height: 2400 };
 
-    // Measure the canvas element (it has a sized parent via flex).
     const rect = container.getBoundingClientRect();
     const cssWidth = Math.max(360, Math.round(rect.width));
     const cssHeight = Math.max(240, Math.round(rect.height));
 
-    // Internal canvas resolution matches the device aspect ratio so
-    // we don't letterbox in the canvas itself; the panel's <div>
-    // sizes the canvas via CSS to fill its allocated window.
-    const dpr = window.devicePixelRatio || 1;
-
     try {
       const handle = await startScreencast(session, {
+        videoEl: video,
         panelWidth: cssWidth,
         panelHeight: cssHeight,
-        devicePixelRatio: dpr,
+        devicePixelRatio: window.devicePixelRatio || 1,
         devicePhysical: deviceSize,
         devicePpi: approxPpi(),
-        onFrame: (bitmap) => {
-          const ctx = canvas.getContext("2d");
-          if (!ctx) return;
-          // Resize the canvas backing store to the decoded frame
-          // size the first time we see a frame. Subsequent frames
-          // assume the size doesn't change unless the panel
-          // resizes (which restarts the pipeline anyway).
-          if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
-            canvas.width = bitmap.width;
-            canvas.height = bitmap.height;
-            canvas.style.width = `${cssWidth}px`;
-            canvas.style.height = `${cssHeight}px`;
-          }
-          ctx.drawImage(bitmap, 0, 0);
-          bitmap.close();
-        },
         onError: (msg) => {
           setStatus("error");
           setErrorMsg(msg);
@@ -159,22 +120,17 @@ export function ScreencastPanel({ session }: AppProps) {
     pipelineRef.current = null;
     setStatus("stopped");
     setStats(null);
-    const ctx = canvasRef.current?.getContext("2d");
-    if (ctx && canvasRef.current) {
-      ctx.clearRect(0, 0, canvasRef.current.width, canvasRef.current.height);
-    }
   }, []);
 
-  // ── Pointer / wheel / drag input → adb shell input ───────────────────────
+  // ── Pointer / wheel / drag → adb shell input ──────────────────────────────
   const sendTap = useCallback(
     (x: number, y: number) => {
       const deviceSize = screenSizeRef.current;
       if (!deviceSize) return;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      // Convert canvas-relative px to device px.
-      const dx = Math.round((x / canvas.clientWidth) * deviceSize.width);
-      const dy = Math.round((y / canvas.clientHeight) * deviceSize.height);
+      const video = videoRef.current;
+      if (!video) return;
+      const dx = Math.round((x / video.clientWidth) * deviceSize.width);
+      const dy = Math.round((y / video.clientHeight) * deviceSize.height);
       void injectInput(session, { kind: "tap", x: dx, y: dy });
     },
     [session],
@@ -184,12 +140,12 @@ export function ScreencastPanel({ session }: AppProps) {
     (x1: number, y1: number, x2: number, y2: number, durationMs = 200) => {
       const deviceSize = screenSizeRef.current;
       if (!deviceSize) return;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const dx1 = Math.round((x1 / canvas.clientWidth) * deviceSize.width);
-      const dy1 = Math.round((y1 / canvas.clientHeight) * deviceSize.height);
-      const dx2 = Math.round((x2 / canvas.clientWidth) * deviceSize.width);
-      const dy2 = Math.round((y2 / canvas.clientHeight) * deviceSize.height);
+      const video = videoRef.current;
+      if (!video) return;
+      const dx1 = Math.round((x1 / video.clientWidth) * deviceSize.width);
+      const dy1 = Math.round((y1 / video.clientHeight) * deviceSize.height);
+      const dx2 = Math.round((x2 / video.clientWidth) * deviceSize.width);
+      const dy2 = Math.round((y2 / video.clientHeight) * deviceSize.height);
       void injectInput(session, {
         kind: "swipe",
         x1: dx1,
@@ -202,10 +158,8 @@ export function ScreencastPanel({ session }: AppProps) {
     [session],
   );
 
-  // ResizeObserver: re-evaluate the panel size on container resize and
-  // restart the pipeline if running. screenrecord can't be resized
-  // mid-stream, so restart is the only option. We debounce slightly
-  // because resize events fire continuously during a drag.
+  // ResizeObserver: restart the pipeline if running and the user
+  // resizes the panel.
   useEffect(() => {
     if (!containerRef.current) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -225,7 +179,6 @@ export function ScreencastPanel({ session }: AppProps) {
     };
   }, [status, start, stop]);
 
-  // Teardown on unmount.
   useEffect(() => {
     return () => {
       pipelineRef.current?.stop();
@@ -233,10 +186,10 @@ export function ScreencastPanel({ session }: AppProps) {
     };
   }, []);
 
-  // ── Pointer event handlers ───────────────────────────────────────────────
-  const onPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  // ── Pointer event handlers ────────────────────────────────────────────────
+  const onPointerDown = (e: React.PointerEvent<HTMLVideoElement>) => {
     e.preventDefault();
-    (e.target as HTMLCanvasElement).setPointerCapture(e.pointerId);
+    (e.target as HTMLVideoElement).setPointerCapture(e.pointerId);
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
@@ -250,24 +203,23 @@ export function ScreencastPanel({ session }: AppProps) {
     };
   };
 
-  const onPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const onPointerMove = (e: React.PointerEvent<HTMLVideoElement>) => {
     if (!dragRef.current?.active) return;
     const rect = e.currentTarget.getBoundingClientRect();
     dragRef.current.currentX = e.clientX - rect.left;
     dragRef.current.currentY = e.clientY - rect.top;
   };
 
-  const onPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+  const onPointerUp = (e: React.PointerEvent<HTMLVideoElement>) => {
     const drag = dragRef.current;
     if (!drag?.active) return;
     dragRef.current = null;
     try {
-      (e.target as HTMLCanvasElement).releasePointerCapture(e.pointerId);
+      (e.target as HTMLVideoElement).releasePointerCapture(e.pointerId);
     } catch {
       /* ignore */
     }
 
-    // Right or middle click → keyevent (HOME / BACK).
     if (e.button === 1) {
       void injectInput(session, { kind: "keyevent", code: KEYCODE_HOME });
       return;
@@ -277,7 +229,6 @@ export function ScreencastPanel({ session }: AppProps) {
       return;
     }
 
-    // Left click → tap or drag-as-swipe.
     const dx = Math.abs(drag.currentX - drag.startX);
     const dy = Math.abs(drag.currentY - drag.startY);
     if (dx < 4 && dy < 4) {
@@ -293,21 +244,17 @@ export function ScreencastPanel({ session }: AppProps) {
     }
   };
 
-  const onWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+  const onWheel = (e: React.WheelEvent<HTMLVideoElement>) => {
     e.preventDefault();
     const rect = e.currentTarget.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     const delta = e.deltaY > 0 ? 1 : -1;
-    // Synthesize a 100-px swipe in the scroll direction. Two swipes
-    // per notch gives a similar feel to native touch scroll.
     for (let i = 0; i < 2; i++) {
       sendSwipe(x, y, x, y + delta * 50, 100);
     }
   };
 
-  // Suppress the browser context menu on right-click so the right
-  // button can be used as BACK.
   const onContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
   };
@@ -343,8 +290,8 @@ export function ScreencastPanel({ session }: AppProps) {
         )}
       </div>
       <div ref={containerRef} className="screencast-canvas-wrap">
-        <canvas
-          ref={canvasRef}
+        <video
+          ref={videoRef}
           className="screencast-canvas"
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}

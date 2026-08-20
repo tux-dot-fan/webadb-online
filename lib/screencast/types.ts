@@ -1,8 +1,8 @@
 // ── Screencast protocol types ────────────────────────────────────────────────
 //
-// Message types passed between the main-thread panel and the Web Worker
-// that hosts the VideoDecoder. Keep this file dependency-free so it
-// can be imported from both threads without bundler headaches.
+// Message types passed between the main-thread panel and the Web Worker.
+// Keep this file dependency-free so it can be imported from both
+// threads without bundler headaches.
 
 /** Sent from the panel to the worker to (re)start a screencast session. */
 export interface StartMsg {
@@ -11,8 +11,6 @@ export interface StartMsg {
   width: number;
   /** Encoded frame height in pixels (even). */
   height: number;
-  /** Encoded bitrate in bits/second. */
-  bitRate: number;
   /** Stream ID echoed back in worker messages so the panel can route. */
   streamId: number;
 }
@@ -29,22 +27,40 @@ export interface ChunkMsg {
   streamId: number;
   /** H.264 annex-B byte chunk, as-is from screenrecord stdout. */
   data: ArrayBuffer;
-  /** True if this is the last chunk the panel will send (process exited). */
-  eos?: boolean;
 }
 
-/** Sent from the worker to the panel when a new VideoFrame is decoded. */
-export interface FrameMsg {
-  type: "frame";
+/** Sent from the worker to the panel when the worker is initialized. */
+export interface ReadyMsg {
+  type: "ready";
   streamId: number;
-  /** The frame's presentation timestamp in microseconds. */
-  timestamp: number;
-  /** Pixel width of the decoded frame. */
-  width: number;
-  /** Pixel height of the decoded frame. */
-  height: number;
-  /** The frame's image data, transferred (zero-copy). */
-  bitmap: ImageBitmap;
+}
+
+/**
+ * Sent from the worker to the panel once the SPS/PPS have been parsed
+ * out of the stream. The init segment is the ftyp+moov box that
+ * `SourceBuffer.appendBuffer()` needs before any media segments.
+ *
+ * `codec` is the codec string for MSE's `addSourceBuffer()` call,
+ * e.g. `avc1.640028`.
+ */
+export interface InitMsg {
+  type: "init";
+  streamId: number;
+  /** Codec string for the MSE SourceBuffer, e.g. `avc1.640028`. */
+  codec: string;
+  /** ftyp+moov box bytes. Transferable. */
+  init: ArrayBuffer;
+}
+
+/**
+ * Sent from the worker to the panel for each new moof+mdat fragment.
+ * The main thread feeds it to `SourceBuffer.appendBuffer()`.
+ */
+export interface MediaMsg {
+  type: "media";
+  streamId: number;
+  /** fMP4 moof+mdat box bytes. Transferable. */
+  buffer: ArrayBuffer;
 }
 
 /** Sent from the worker to the panel when something goes wrong. */
@@ -54,12 +70,6 @@ export interface ErrorMsg {
   message: string;
 }
 
-/** Sent from the worker to the panel when the decoder is ready. */
-export interface ReadyMsg {
-  type: "ready";
-  streamId: number;
-}
-
 /** All messages that flow through the worker port. */
 export type WorkerInbound = StartMsg | StopMsg | ChunkMsg;
-export type WorkerOutbound = FrameMsg | ErrorMsg | ReadyMsg;
+export type WorkerOutbound = ReadyMsg | InitMsg | MediaMsg | ErrorMsg;

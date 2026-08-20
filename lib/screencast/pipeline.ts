@@ -2,10 +2,11 @@
 //
 // Glue between `session.adb.subprocess.shellProtocol` (the underlying
 // ya-webadb API that panels get via the AppProps.session prop) and
-// the Web Worker that hosts the VideoDecoder. Reads chunks from the
-// screenrecord stdout, forwards them to the worker, and routes the
-// worker's `frame` messages to a callback (which paints them onto
-// the panel's <canvas>).
+// the Web Worker that muxes the device's H.264 stream into fMP4
+// fragments. The main thread owns a MediaSource / SourceBuffer pair
+// that drives a plain <video> element — that's how the browser's
+// built-in H.264 decoder gets engaged without us having to manage
+// SPS/PPS extraction or VideoDecoder.configure() ourselves.
 //
 // The pipeline is intentionally one-shot: when the user resizes the
 // panel, we tear down the current session and start a new one with
@@ -30,55 +31,38 @@ export interface PipelineHandle {
   /** The current encoded frame dimensions, for UI display. */
   encodedWidth: number;
   encodedHeight: number;
-  /** Stop the current session and tear down the worker. */
+  /** Stop the current session and tear down the worker + MediaSource. */
   stop(): void;
 }
 
 /**
  * Start a screencast session. The worker is created lazily and torn
- * down on `stop()`. The `onFrame` callback is invoked from the
- * worker message handler; it should be cheap (a single
- * `drawImage(bitmap, 0, 0)` is typical).
+ * down on `stop()`. `videoEl` is the <video> element the pipeline
+ * drives via a MediaSource. `onError` is called for any failure
+ * (worker, MediaSource, decode).
  */
 export async function startScreencast(
   session: AdbSession,
   opts: {
-    /** Panel width in CSS pixels (not encoded dimensions). */
+    videoEl: HTMLVideoElement;
     panelWidth: number;
-    /** Panel height in CSS pixels. */
     panelHeight: number;
-    /** Device pixel ratio of the panel's window, for matching PPI. */
     devicePixelRatio: number;
-    /** Device's physical screen size in pixels (from `wm size`). */
     devicePhysical: { width: number; height: number };
-    /** Approximate device PPI, for the bitrate formula. */
     devicePpi: number;
-    onFrame: (bitmap: ImageBitmap) => void;
     onError: (message: string) => void;
     onReady?: () => void;
   },
 ): Promise<PipelineHandle> {
-  // Map CSS-pixel panel size to encoded frame dimensions. We don't
-  // multiply by DPR — the panel size is what the user sees, so
-  // encoding more pixels than that would waste bandwidth. We do
-  // ensure the encoded height is at least 360 (so the device
-  // doesn't reject with a "too small" error) and the aspect ratio
-  // matches the device.
+  // ── 1. Encode size + bitrate (PPI-aware) ─────────────────────────────────
   const aspect = opts.devicePhysical.height / opts.devicePhysical.width;
   let encodedWidth = Math.max(360, Math.round(opts.panelWidth));
   let encodedHeight = Math.max(Math.round(360 * aspect), Math.round(encodedWidth * aspect));
-  // screenrecord rejects odd dimensions — round down to even.
   encodedWidth = encodedWidth & ~1;
   encodedHeight = encodedHeight & ~1;
 
-  // Bitrate: PPI-aware, scaled to the panel. We treat the device's
-  // native resolution as the "1.0×" reference and the panel's
-  // encoded area as the multiplier.
   const nativeArea = opts.devicePhysical.width * opts.devicePhysical.height;
   const panelArea = encodedWidth * encodedHeight;
-  // PPI reduction: 1.0 at 440 ppi, lower PPI on the panel side = lower
-  // bitrate. A 200-ppi display in the panel gets ~half the bitrate
-  // of a 440-ppi one at the same panel size.
   const ppiFactor = Math.max(0.4, Math.min(1.0, opts.devicePpi / 440));
   const bitrate = Math.max(
     MIN_BITRATE,
@@ -88,47 +72,171 @@ export async function startScreencast(
     ),
   );
 
-  // Spawn the worker via the `new Worker(new URL(...), { type: 'module' })`
-  // pattern. next/swc recognizes this and bundles the worker as a
-  // separate chunk automatically.
+  // ── 2. Set up the <video> element + MediaSource + SourceBuffer ───────────
+  const videoEl = opts.videoEl;
+  // Make sure the element can play inline without user gesture.
+  videoEl.muted = true; // screencast has no audio; muted avoids the
+                        // browser autoplay block
+  videoEl.autoplay = true;
+  videoEl.playsInline = true;
+
+  const mediaSource = new MediaSource();
+  // Attach MediaSource to the <video> via createObjectURL so the
+  // browser wires the SourceBuffer updates back to the element.
+  // We capture the URL but revoke it on stop.
+  const objectUrl = URL.createObjectURL(mediaSource);
+  videoEl.src = objectUrl;
+
+  let sourceBuffer: SourceBuffer | null = null;
+  let mediaSourceOpen = false;
+  // Queue any media segments that arrive before the MediaSource is
+  // open. MediaSource opens asynchronously (see the 'sourceopen'
+  // event handler below).
+  let pendingInit: ArrayBuffer | null = null;
+  let pendingMedia: ArrayBuffer[] = [];
+  // Promise that resolves when sourceopen fires, so the worker can
+  // know when it's safe to start feeding the buffer.
+  const sourceOpenPromise = new Promise<void>((resolve) => {
+    if (mediaSource.readyState === "open") {
+      mediaSourceOpen = true;
+      resolve();
+      return;
+    }
+    mediaSource.addEventListener("sourceopen", () => {
+      mediaSourceOpen = true;
+      resolve();
+    });
+    mediaSource.addEventListener("error", () => {
+      opts.onError(`MediaSource error: ${mediaSource.readyState}`);
+    });
+  });
+
+  const appendBuffer = (buf: ArrayBuffer): void => {
+    if (!sourceBuffer) return;
+    if (sourceBuffer.updating) {
+      // SourceBuffer is busy. Queue and let it drain via the
+      // 'updateend' event.
+      sourceBuffer.addEventListener(
+        "updateend",
+        () => {
+          if (pendingMedia.length > 0 && sourceBuffer && !sourceBuffer.updating) {
+            const next = pendingMedia.shift()!;
+            try {
+              sourceBuffer.appendBuffer(next);
+            } catch (e) {
+              opts.onError(
+                `SourceBuffer.appendBuffer failed: ${
+                  e instanceof Error ? e.message : String(e)
+                }`,
+              );
+            }
+          }
+        },
+        { once: true },
+      );
+    } else {
+      try {
+        sourceBuffer.appendBuffer(buf);
+      } catch (e) {
+        opts.onError(
+          `SourceBuffer.appendBuffer failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
+  };
+
+  // ── 3. Start the worker ──────────────────────────────────────────────────
   const worker = new Worker(new URL("./worker.ts", import.meta.url), {
     type: "module",
     name: "screencast-decoder",
   });
-
   const streamId = Date.now() ^ Math.floor(Math.random() * 0xffff);
-
   let stopRequested = false;
   let killFn: (() => void) | null = null;
 
-  worker.addEventListener("message", (ev: MessageEvent<WorkerOutbound>) => {
+  worker.addEventListener("message", async (ev: MessageEvent<WorkerOutbound>) => {
     const msg = ev.data;
-    if (msg.streamId !== streamId) return; // stale from a previous session
-    if (msg.type === "frame") {
-      opts.onFrame(msg.bitmap);
-    } else if (msg.type === "error") {
-      opts.onError(msg.message);
-    } else if (msg.type === "ready") {
+    if (msg.streamId !== streamId) return;
+    if (msg.type === "ready") {
+      // Worker is initialized. We'll start spawning screenrecord
+      // once MediaSource is open.
       opts.onReady?.();
+      return;
+    }
+    if (msg.type === "init") {
+      // Wait for MediaSource to be open before adding the buffer.
+      await sourceOpenPromise;
+      if (stopRequested) return;
+      try {
+        sourceBuffer = mediaSource.addSourceBuffer(
+          `video/mp4; codecs="${msg.codec}"`,
+        );
+      } catch (e) {
+        opts.onError(
+          `addSourceBuffer failed (codec ${msg.codec}): ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+        return;
+      }
+      sourceBuffer.addEventListener("error", () => {
+        opts.onError(
+          `SourceBuffer error (updating=${sourceBuffer?.updating})`,
+        );
+      });
+      // The init segment goes first.
+      try {
+        sourceBuffer.appendBuffer(msg.init);
+      } catch (e) {
+        opts.onError(
+          `init appendBuffer failed: ${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+      return;
+    }
+    if (msg.type === "media") {
+      // If the SourceBuffer isn't ready yet, queue; otherwise append.
+      if (!sourceBuffer) {
+        pendingMedia.push(msg.buffer);
+        return;
+      }
+      appendBuffer(msg.buffer);
+      // Try to keep the video element close to live by playing as
+      // soon as we have at least one frame buffered. The browser
+      // will automatically drop frames if the playback rate can't
+      // keep up with the source.
+      if (videoEl.paused && videoEl.buffered.length > 0) {
+        const targetTime = videoEl.buffered.end(
+          videoEl.buffered.length - 1,
+        ) - 0.05; // 50 ms behind the head
+        if (targetTime > videoEl.currentTime) {
+          try {
+            videoEl.currentTime = Math.max(0, targetTime);
+          } catch {
+            /* ignore — first play can throw if not yet seekable */
+          }
+        }
+        void videoEl.play().catch(() => {
+          /* ignore autoplay errors */
+        });
+      }
+      return;
+    }
+    if (msg.type === "error") {
+      opts.onError(msg.message);
+      return;
     }
   });
 
-  // Tell the worker to start.
-  worker.postMessage({
-    type: "start",
-    streamId,
-    width: encodedWidth,
-    height: encodedHeight,
-    bitRate: bitrate,
-  });
-
-  // Spawn screenrecord on the device via the same Shell V2 API the
-  // logcat panel uses. The `shell.spawn()` call is the same call
-  // that powers every other panel that needs a long-running process.
+  // ── 4. Spawn screenrecord on the device ──────────────────────────────────
   const shell = session.adb.subprocess.shellProtocol;
   if (!shell || !shell.isSupported) {
-    worker.postMessage({ type: "stop", streamId });
     worker.terminate();
+    URL.revokeObjectURL(objectUrl);
     throw new Error("Device doesn't support Shell V2 protocol");
   }
 
@@ -149,7 +257,15 @@ export async function startScreencast(
     }
   };
 
-  // Pump stdout chunks into the worker.
+  // Tell the worker to start.
+  worker.postMessage({
+    type: "start",
+    streamId,
+    width: encodedWidth,
+    height: encodedHeight,
+  });
+
+  // ── 5. Pump stdout → worker chunks ───────────────────────────────────────
   const reader = (proc.stdout as unknown as ReadableStream<Uint8Array>).getReader();
   (async () => {
     try {
@@ -161,10 +277,7 @@ export async function startScreencast(
             value.byteOffset,
             value.byteOffset + value.byteLength,
           );
-          worker.postMessage(
-            { type: "chunk", streamId, data: buf, eos: false },
-            [buf],
-          );
+          worker.postMessage({ type: "chunk", streamId, data: buf }, [buf]);
         }
       }
     } catch (e) {
@@ -196,16 +309,36 @@ export async function startScreencast(
       } catch {
         /* ignore */
       }
-      worker.postMessage({ type: "stop", streamId });
-      // Give the worker a tick to flush its in-flight frame, then
-      // terminate. We can't await here because stop() is sync.
-      setTimeout(() => {
-        try {
-          worker.terminate();
-        } catch {
-          /* ignore */
+      try {
+        worker.postMessage({ type: "stop", streamId });
+        worker.terminate();
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (videoEl && mediaSource.readyState === "open") {
+          if (sourceBuffer && !sourceBuffer.updating) {
+            try {
+              mediaSource.endOfStream();
+            } catch {
+              /* ignore */
+            }
+          }
         }
-      }, 100);
+      } catch {
+        /* ignore */
+      }
+      try {
+        URL.revokeObjectURL(objectUrl);
+      } catch {
+        /* ignore */
+      }
+      try {
+        videoEl.removeAttribute("src");
+        videoEl.load();
+      } catch {
+        /* ignore */
+      }
     },
   };
 }
@@ -213,10 +346,6 @@ export async function startScreencast(
 /**
  * Read the device's current screen size via `wm size`. Returns null
  * if `wm` isn't available (very old Androids) or the call fails.
- *
- * `wm size` reports the natural display size in pixels regardless of
- * orientation. We use this to map pointer events from the screencast
- * panel's normalized coordinates to device-pixel coordinates.
  */
 export async function getDeviceScreenSize(
   session: AdbSession,
@@ -248,13 +377,8 @@ export async function getDeviceScreenSize(
 }
 
 /**
- * Issue a `input` command on the device. Used by the Screencast
- * panel to forward pointer events from the canvas to the device.
- *
- * `input` is the Android shell command that synthesizes events on
- * `/dev/input/event*`. We support `tap`, `swipe`, `keyevent`.
- *
- * Errors are swallowed; pointer events are best-effort.
+ * Issue a `input` command on the device. Used by the Screencast panel
+ * to forward pointer events from the canvas to the device.
  */
 export async function injectInput(
   session: AdbSession,
@@ -287,7 +411,6 @@ export async function injectInput(
     const shell = session.adb.subprocess.shellProtocol;
     if (!shell || !shell.isSupported) return;
     const proc = await shell.spawn(args);
-    // Drain stdout/stderr so the process can exit cleanly.
     try {
       const r = (proc.stdout as unknown as ReadableStream<Uint8Array>).getReader();
       while (true) {
