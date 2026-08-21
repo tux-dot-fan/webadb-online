@@ -39,13 +39,23 @@ export class Fmp4Muxer {
   /** Build + emit the ftyp + moov init segment from avcC bytes. */
   setCodec(avcC: Uint8Array): void {
     if (this.initSent) return;
-    const ftyp = buildFtyp();
-    const moov = buildMoov(
-      this.opts.width,
-      this.opts.height,
-      avcC,
-      this.timescale,
-    );
+    console.log(TAG, "setCodec: avcC.length =", avcC.length);
+    let ftyp: Uint8Array;
+    let moov: Uint8Array;
+    try {
+      ftyp = buildFtyp();
+      console.log(TAG, "ftyp built:", ftyp.length);
+      moov = buildMoov(
+        this.opts.width,
+        this.opts.height,
+        avcC,
+        this.timescale,
+      );
+      console.log(TAG, "moov built:", moov.length);
+    } catch (e) {
+      console.error(TAG, "buildMoov FAILED:", e);
+      throw e;
+    }
     const init = concatBytes(ftyp, moov);
     this.initSent = true;
     console.log(
@@ -119,6 +129,8 @@ function buildMoov(
   avcC: Uint8Array,
   timescale: number,
 ): Uint8Array {
+  const log = (s: string) => { console.log(TAG, "[buildMoov]", s); };
+  log(`width=${width} height=${height} avcC=${avcC.length} timescale=${timescale}`);
   // mvhd 108 bytes
   const mvhd = new Uint8Array(108);
   const mvhdView = new DataView(mvhd.buffer);
@@ -222,6 +234,7 @@ function buildMoov(
   //   + 4+4 horiz/vert dpi + 4 reserved + 2 frame_count
   //   + 32 compressor name + 2 depth + 2 pre_defined
   //   + avcC.length
+  log(`about to allocate avc1 (avcC.length=${avcC.length})`);
   const avc1Size = 86 + avcC.length;
   const avc1 = new Uint8Array(avc1Size);
   const avc1View = new DataView(avc1.buffer);
@@ -239,15 +252,17 @@ function buildMoov(
   // compressor_name 32 bytes at offset 50..81 (all zero)
   avc1View.setUint16(82, 0x0018, false); // depth 24
   avc1View.setUint16(84, 0xffff, false); // pre_defined (-1)
+  log(`about to avc1.set(avcC, 86); avcC.length=${avcC.length} avc1.length=${avc1.length}`);
   avc1.set(avcC, 86);
 
-  // stsd: 12 (full box header) + 4 entry_count + avc1.length
+  // stsd: 16 + avc1.length
   const stsd = new Uint8Array(16 + avc1.length);
   const stsdView = new DataView(stsd.buffer);
   stsdView.setUint32(0, stsd.length, false);
   ascii(stsd, 4, "stsd");
   stsdView.setUint32(8, 0, false); // version
   stsdView.setUint32(12, 1, false); // entry_count
+  log(`about to stsd.set(avc1, 16); avc1.length=${avc1.length} stsd.length=${stsd.length}`);
   stsd.set(avc1, 16);
 
   // stts 16 bytes (empty time-to-sample)
@@ -284,11 +299,11 @@ function buildMoov(
   stcoView.setUint32(12, 0, false);
 
   // stbl = stsd + stts + stsc + stsz + stco
-  const stbl = concatBytes(
-    boxWrap("stbl", concatBytes(stsd, stts, stsc, stsz, stco)),
-  );
-  void stbl;
-  const stblBox = box("stbl", concatBytes(stsd, stts, stsc, stsz, stco));
+  log(`about to concatBytes for stbl; stsd=${stsd.length} stts=${stts.length} stsc=${stsc.length} stsz=${stsz.length} stco=${stco.length}`);
+  const stblContents = concatBytes(stsd, stts, stsc, stsz, stco);
+  log(`stblContents.length=${stblContents.length}`);
+  const stblBox = box("stbl", stblContents);
+  log(`stblBox.length=${stblBox.length}`);
 
   // minf = vmhd + dinf + stbl
   const minf = box(
@@ -500,21 +515,25 @@ export function parseSpsPps(
   if (!sps || !pps) return null;
 
   // AVCDecoderConfigurationRecord
+  // 1 (configVersion) + 1 + 1 + 1 + 1 (lengthSizeMinusOne) = 5 bytes
+  // + 1 (numSPS) + 2 (SPS length) + sps.length = 3 + sps.length
+  // + 1 (numPPS) + 2 (PPS length) + pps.length = 3 + pps.length
+  // Total = 11 + sps.length + pps.length
   const desc = new Uint8Array(
-    1 + 1 + 1 + 1 + 1 + 2 + sps.length + 1 + 2 + pps.length,
+    1 + 1 + 1 + 1 + 1 + 1 + 2 + sps.length + 1 + 2 + pps.length,
   );
   let off = 0;
-  desc[off++] = 1;
+  desc[off++] = 1; // configurationVersion
   desc[off++] = profileIdc;
   desc[off++] = profileCompat;
   desc[off++] = levelIdc;
-  desc[off++] = 0xff;
-  desc[off++] = 1;
+  desc[off++] = 0xff; // reserved 6 bits + lengthSizeMinusOne (3) 2 bits
+  desc[off++] = 1; // numOfSequenceParameterSets
   desc[off++] = (sps.length >> 8) & 0xff;
   desc[off++] = sps.length & 0xff;
   desc.set(sps, off);
   off += sps.length;
-  desc[off++] = 1;
+  desc[off++] = 1; // numOfPictureParameterSets
   desc[off++] = (pps.length >> 8) & 0xff;
   desc[off++] = pps.length & 0xff;
   desc.set(pps, off);
