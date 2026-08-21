@@ -2,51 +2,54 @@
 //
 // Glue between `session.adb.subprocess.shellProtocol` (the underlying
 // ya-webadb API that panels get via the AppProps.session prop) and
-// the Web Worker that muxes the device's H.264 stream into fMP4
-// fragments. The main thread owns a MediaSource / SourceBuffer pair
-// that drives a plain <video> element — that's how the browser's
-// built-in H.264 decoder gets engaged without us having to manage
-// SPS/PPS extraction or VideoDecoder.configure() ourselves.
+// the MediaSource / SourceBuffer pair that drives the panel's
+// `<video>` element.
 //
-// The pipeline is intentionally one-shot: when the user resizes the
-// panel, we tear down the current session and start a new one with
-// the new dimensions. screenrecord's `--size` and `--bit-rate` flags
-// are not changeable at runtime (the process would have to be killed
-// and restarted), so this is the simplest way to handle the
-// PPI-matching behavior we want.
+// Architecture:
+//
+//   device ─adb shell screenrecord─> stdout chunks
+//        ─streamed─> main thread reader
+//        ─passed─> muxer.addVideoChunkRaw (mp4-muxer fMP4)
+//        ─init segment─> SourceBuffer.addSourceBuffer + appendBuffer
+//        ─media fragments─> SourceBuffer.appendBuffer
+//        ─decoded H.264─> <video> element
+//        ─user clicks <video>─> `adb shell input tap`
+//
+// The original implementation used a Web Worker for muxing, but the
+// Next.js worker bundler doesn't reliably include npm-only ESM
+// packages (mp4-muxer) in the worker chunk in `output: "export"`
+// mode — the worker emits a useless `error` event with no message
+// and never reaches its `start` handler. mp4-muxer is fast enough
+// (μs per chunk) that running it on the main thread doesn't impact
+// UI responsiveness.
 
 import type { AdbSession } from "@/lib/adb-client";
-import type { WorkerOutbound, ProgressKind } from "./types";
+import type { ProgressKind } from "./types";
+import {
+  parseSpsPps,
+  splitAnnexBNals,
+  createMuxer,
+  type MuxerHandle,
+} from "./muxer";
 
-// All console output from the screencast pipeline is prefixed with
-// [screencast] so it can be filtered easily in DevTools. We log
-// every pipeline transition and every error path so the user can
-// see what's happening even when the on-screen UI is stuck.
+// All console output is prefixed with [screencast] so it can be
+// filtered easily in DevTools.
 const TAG = "[screencast]";
 
 /** Bitrate (in bits/second) at the device's native resolution. */
-const NATIVE_BITRATE = 4_000_000; // 4 Mbps, the screenrecord default
-/** Floor so even a 200-px panel gets a usable stream. */
-const MIN_BITRATE = 200_000; // 200 kbps
-/** Ceiling so a 4K panel doesn't overflow the USB pipe. */
-const MAX_BITRATE = 8_000_000; // 8 Mbps
+const NATIVE_BITRATE = 4_000_000;
+const MIN_BITRATE = 200_000;
+const MAX_BITRATE = 8_000_000;
 
 export interface PipelineHandle {
-  /** The current bitrate the device is encoding at, for UI display. */
   bitrate: number;
-  /** The current encoded frame dimensions, for UI display. */
   encodedWidth: number;
   encodedHeight: number;
-  /** Stop the current session and tear down the worker + MediaSource. */
   stop(): void;
 }
 
-/**
- * Start a screencast session. The worker is created lazily and torn
- * down on `stop()`. `videoEl` is the <video> element the pipeline
- * drives via a MediaSource. `onError` is called for any failure
- * (worker, MediaSource, decode).
- */
+const ASSUMED_FPS = 30;
+
 export async function startScreencast(
   session: AdbSession,
   opts: {
@@ -61,10 +64,12 @@ export async function startScreencast(
     onProgress?: (kind: ProgressKind, detail?: string) => void;
   },
 ): Promise<PipelineHandle> {
-  // ── 1. Encode size + bitrate (PPI-aware) ─────────────────────────────────
   const aspect = opts.devicePhysical.height / opts.devicePhysical.width;
   let encodedWidth = Math.max(360, Math.round(opts.panelWidth));
-  let encodedHeight = Math.max(Math.round(360 * aspect), Math.round(encodedWidth * aspect));
+  let encodedHeight = Math.max(
+    Math.round(360 * aspect),
+    Math.round(encodedWidth * aspect),
+  );
   encodedWidth = encodedWidth & ~1;
   encodedHeight = encodedHeight & ~1;
 
@@ -79,40 +84,26 @@ export async function startScreencast(
     ),
   );
 
-  // ── 2. Set up the <video> element + MediaSource + SourceBuffer ───────────
+  // ── 1. <video> + MediaSource + SourceBuffer setup ────────────────────────
   const videoEl = opts.videoEl;
-  // Make sure the element can play inline without user gesture.
-  videoEl.muted = true; // screencast has no audio; muted avoids the
-                        // browser autoplay block
+  videoEl.muted = true;
   videoEl.autoplay = true;
   videoEl.playsInline = true;
 
   const mediaSource = new MediaSource();
   console.log(TAG, "MediaSource created, initial state:", mediaSource.readyState);
-  // Attach MediaSource to the <video> via createObjectURL so the
-  // browser wires the SourceBuffer updates back to the element.
-  // We capture the URL but revoke it on stop.
   const objectUrl = URL.createObjectURL(mediaSource);
   videoEl.src = objectUrl;
   console.log(TAG, "video.src set, video dimensions:", videoEl.clientWidth, "x", videoEl.clientHeight);
 
   let sourceBuffer: SourceBuffer | null = null;
-  let mediaSourceOpen = false;
-  // Queue any media segments that arrive before the MediaSource is
-  // open. MediaSource opens asynchronously (see the 'sourceopen'
-  // event handler below).
-  let pendingInit: ArrayBuffer | null = null;
-  let pendingMedia: ArrayBuffer[] = [];
-  // Promise that resolves when sourceopen fires, so the worker can
-  // know when it's safe to start feeding the buffer.
+  const pendingMedia: ArrayBuffer[] = [];
   const sourceOpenPromise = new Promise<void>((resolve) => {
     if (mediaSource.readyState === "open") {
-      mediaSourceOpen = true;
       resolve();
       return;
     }
     mediaSource.addEventListener("sourceopen", () => {
-      mediaSourceOpen = true;
       console.log(TAG, "MediaSource sourceopen event fired, readyState:", mediaSource.readyState);
       resolve();
     });
@@ -131,12 +122,14 @@ export async function startScreencast(
   const appendBuffer = (buf: ArrayBuffer): void => {
     if (!sourceBuffer) return;
     if (sourceBuffer.updating) {
-      // SourceBuffer is busy. Queue and let it drain via the
-      // 'updateend' event.
       sourceBuffer.addEventListener(
         "updateend",
         () => {
-          if (pendingMedia.length > 0 && sourceBuffer && !sourceBuffer.updating) {
+          if (
+            pendingMedia.length > 0 &&
+            sourceBuffer &&
+            !sourceBuffer.updating
+          ) {
             const next = pendingMedia.shift()!;
             try {
               sourceBuffer.appendBuffer(next);
@@ -164,143 +157,144 @@ export async function startScreencast(
     }
   };
 
-  // ── 3. Start the worker ──────────────────────────────────────────────────
-  const worker = new Worker(new URL("./worker.ts", import.meta.url), {
-    type: "module",
-    name: "screencast-decoder",
-  });
-  const streamId = Date.now() ^ Math.floor(Math.random() * 0xffff);
-  let stopRequested = false;
-  let killFn: (() => void) | null = null;
+  // ── 2. Muxer setup ───────────────────────────────────────────────────────
+  let muxer: MuxerHandle | null = null;
+  let pendingChunks: Array<{
+    data: Uint8Array;
+    type: "key" | "delta";
+    timestampUs: number;
+    durationUs: number;
+    meta?: { decoderConfig: { codec: "avc"; description: Uint8Array } };
+  }> = [];
+  let configSent = false;
+  let sawKeyframe = false;
+  let chunkCounter = 0;
+  let avcConfig: { description: Uint8Array } | null = null;
+  let codec = "avc1.42E01E";
 
-  worker.addEventListener("message", async (ev: MessageEvent<WorkerOutbound>) => {
-    const msg = ev.data;
-    if (msg.streamId !== streamId) {
-      console.warn(TAG, "ignoring stale message", msg.type, msg.streamId, "!=", streamId);
-      return;
-    }
-    console.log(TAG, "← worker message:", msg.type, "streamId:", msg.streamId);
-    if (msg.type === "ready") {
-      // Worker is initialized. We'll start spawning screenrecord
-      // once MediaSource is open.
-      opts.onReady?.();
-      return;
-    }
-    if (msg.type === "init") {
-      console.log(TAG, "init segment received, codec:", msg.codec, "bytes:", msg.init.byteLength, "hex-prefix:", new Uint8Array(msg.init, 0, Math.min(8, msg.init.byteLength)));
-      // Wait for MediaSource to be open before adding the buffer.
-      await sourceOpenPromise;
-      if (stopRequested) return;
-      try {
-        sourceBuffer = mediaSource.addSourceBuffer(
-          `video/mp4; codecs="${msg.codec}"`,
-        );
-        console.log(TAG, "addSourceBuffer succeeded, codec:", msg.codec);
-      } catch (e) {
-        console.error(TAG, "addSourceBuffer FAILED", msg.codec, e);
-        opts.onError(
-          `addSourceBuffer failed (codec ${msg.codec}): ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        );
-        return;
-      }
-      sourceBuffer.addEventListener("error", (ev) => {
-        console.error(TAG, "SourceBuffer error event", ev);
-        opts.onError(
-          `SourceBuffer error (updating=${sourceBuffer?.updating})`,
-        );
-      });
-      sourceBuffer.addEventListener("updateend", () => {
-        console.log(TAG, "SourceBuffer updateend, buffered:", sourceBuffer?.buffered.length, "timeRanges:", sourceBuffer?.buffered.length ? `${sourceBuffer.buffered.start(0).toFixed(2)} - ${sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1).toFixed(2)}` : "[]");
-      });
-      // The init segment goes first.
-      try {
-        sourceBuffer.appendBuffer(msg.init);
-        console.log(TAG, "init appendBuffer called,", msg.init.byteLength, "bytes");
-        opts.onProgress?.("init-sent", msg.codec);
-      } catch (e) {
-        console.error(TAG, "init appendBuffer FAILED", e);
-        opts.onError(
-          `init appendBuffer failed: ${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        );
-      }
-      return;
-    }
-    if (msg.type === "media") {
-      console.log(TAG, "media chunk received,", msg.buffer.byteLength, "bytes, sourceBuffer:", !!sourceBuffer, "pendingMedia.length:", pendingMedia.length);
-      // If the SourceBuffer isn't ready yet, queue; otherwise append.
-      if (!sourceBuffer) {
-        pendingMedia.push(msg.buffer);
-        return;
-      }
-      // First-frame event is fired before play() resolves, since we
-      // can't predict when the decoder has decoded enough to produce
-      // a video frame. The `playing` event fires once the first frame
-      // actually paints.
-      appendBuffer(msg.buffer);
-      opts.onProgress?.("first-frame", `${msg.buffer.byteLength} bytes`);
-      // Try to keep the video element close to live by playing as
-      // soon as we have at least one frame buffered. The browser
-      // will automatically drop frames if the playback rate can't
-      // keep up with the source.
-      if (videoEl.paused && videoEl.buffered.length > 0) {
-        const targetTime = videoEl.buffered.end(
-          videoEl.buffered.length - 1,
-        ) - 0.05; // 50 ms behind the head
-        if (targetTime > videoEl.currentTime) {
+  const createMuxerInstance = (): MuxerHandle => {
+    return createMuxer(
+      encodedWidth,
+      encodedHeight,
+      (initBuf, initCodec) => {
+        codec = initCodec;
+        console.log(TAG, "init segment received, codec:", initCodec, "bytes:", initBuf.byteLength, "hex-prefix:", new Uint8Array(initBuf, 0, Math.min(8, initBuf.byteLength)));
+        sourceOpenPromise.then(() => {
+          if (stopRequested) return;
           try {
-            videoEl.currentTime = Math.max(0, targetTime);
-          } catch {
-            /* ignore — first play can throw if not yet seekable */
+            sourceBuffer = mediaSource.addSourceBuffer(
+              `video/mp4; codecs="${initCodec}"`,
+            );
+            console.log(TAG, "addSourceBuffer succeeded, codec:", initCodec);
+          } catch (e) {
+            console.error(TAG, "addSourceBuffer FAILED", initCodec, e);
+            opts.onError(
+              `addSourceBuffer failed (codec ${initCodec}): ${
+                e instanceof Error ? e.message : String(e)
+              }`,
+            );
+            return;
           }
-        }
-        videoEl.addEventListener(
-          "playing",
-          () => {
-            console.log(TAG, "video.playing event fired");
-            opts.onProgress?.("playing");
-          },
-          { once: true },
-        );
-        void videoEl.play().catch((e) => {
-          console.warn(TAG, "videoEl.play() rejected:", e);
-          /* ignore autoplay errors */
+          sourceBuffer.addEventListener("error", (ev) => {
+            console.error(TAG, "SourceBuffer error event", ev);
+            opts.onError(
+              `SourceBuffer error (updating=${sourceBuffer?.updating})`,
+            );
+          });
+          sourceBuffer.addEventListener("updateend", () => {
+            if (sourceBuffer && sourceBuffer.buffered.length > 0) {
+              console.log(
+                TAG,
+                "SourceBuffer updateend, buffered:",
+                sourceBuffer.buffered.length,
+                "timeRanges:",
+                `${sourceBuffer.buffered.start(0).toFixed(2)} - ${sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1).toFixed(2)}`,
+              );
+            }
+          });
+          try {
+            sourceBuffer.appendBuffer(initBuf);
+            console.log(TAG, "init appendBuffer called,", initBuf.byteLength, "bytes");
+            opts.onProgress?.("init-sent", initCodec);
+          } catch (e) {
+            console.error(TAG, "init appendBuffer FAILED", e);
+            opts.onError(
+              `init appendBuffer failed: ${
+                e instanceof Error ? e.message : String(e)
+              }`,
+            );
+          }
+          // Flush any media fragments that arrived while we were
+          // waiting for addSourceBuffer to complete.
+          while (
+            pendingMedia.length > 0 &&
+            sourceBuffer &&
+            !sourceBuffer.updating
+          ) {
+            const next = pendingMedia.shift()!;
+            try {
+              sourceBuffer.appendBuffer(next);
+            } catch (e) {
+              opts.onError(
+                `SourceBuffer.appendBuffer failed: ${
+                  e instanceof Error ? e.message : String(e)
+                }`,
+              );
+            }
+          }
         });
-      }
-      return;
-    }
-    if (msg.type === "error") {
-      console.error(TAG, "worker error:", msg.message);
-      opts.onError(msg.message);
-      return;
-    }
-    if (msg.type === "progress") {
-      opts.onProgress?.(msg.kind, msg.detail);
-      return;
-    }
-  });
-  worker.addEventListener("error", (ev) => {
-    console.error(TAG, "worker error event:", ev);
-  });
-  worker.addEventListener("messageerror", (ev) => {
-    console.error(TAG, "worker messageerror event:", ev);
-  });
+      },
+      (mediaBuf) => {
+        console.log(TAG, "media chunk received,", mediaBuf.byteLength, "bytes, sourceBuffer:", !!sourceBuffer, "pendingMedia.length:", pendingMedia.length);
+        if (!sourceBuffer) {
+          pendingMedia.push(mediaBuf);
+          return;
+        }
+        appendBuffer(mediaBuf);
+        opts.onProgress?.("first-frame", `${mediaBuf.byteLength} bytes`);
+        if (videoEl.paused && videoEl.buffered.length > 0) {
+          const targetTime =
+            videoEl.buffered.end(videoEl.buffered.length - 1) - 0.05;
+          if (targetTime > videoEl.currentTime) {
+            try {
+              videoEl.currentTime = Math.max(0, targetTime);
+            } catch {
+              /* ignore */
+            }
+          }
+          videoEl.addEventListener(
+            "playing",
+            () => {
+              console.log(TAG, "video.playing event fired");
+              opts.onProgress?.("playing");
+            },
+            { once: true },
+          );
+          void videoEl.play().catch((e) => {
+            console.warn(TAG, "videoEl.play() rejected:", e);
+          });
+        }
+      },
+    );
+  };
 
-  // ── 4. Spawn screenrecord on the device ──────────────────────────────────
+  // ── 3. Spawn screenrecord on the device ──────────────────────────────────
   const shell = session.adb.subprocess.shellProtocol;
   if (!shell || !shell.isSupported) {
-    worker.terminate();
     URL.revokeObjectURL(objectUrl);
     throw new Error("Device doesn't support Shell V2 protocol");
   }
 
-  opts.onProgress?.("spawning", `${encodedWidth}×${encodedHeight} @ ${(bitrate / 1_000).toFixed(0)} kbps`);
+  opts.onProgress?.(
+    "spawning",
+    `${encodedWidth}×${encodedHeight} @ ${(bitrate / 1_000).toFixed(0)} kbps`,
+  );
   console.log(TAG, "spawning screenrecord", { width: encodedWidth, height: encodedHeight, bitrate });
 
-  const timeLimit = 180; // screenrecord max; restart if user keeps it open
+  let stopRequested = false;
+  let killFn: (() => void) | null = null;
+
+  const timeLimit = 180;
   const proc = await shell.spawn([
     "screenrecord",
     "--output-format=h264",
@@ -312,22 +306,17 @@ export async function startScreencast(
   console.log(TAG, "screenrecord spawned, getting stdout reader");
   opts.onProgress?.("screenrecord-started");
   killFn = () => {
-    try {
-      void proc.kill();
-    } catch {
-      /* ignore */
-    }
+    try { void proc.kill(); } catch { /* ignore */ }
   };
 
-  // Tell the worker to start.
-  worker.postMessage({
-    type: "start",
-    streamId,
-    width: encodedWidth,
-    height: encodedHeight,
-  });
+  muxer = createMuxerInstance();
 
-  // ── 5. Pump stdout → worker chunks ───────────────────────────────────────
+  // Worker-equivalent "ready" event — let the panel switch to
+  // "running" once we know the pipeline is set up (muxer ready,
+  // first chunk may still be a few seconds away).
+  opts.onReady?.();
+
+  // ── 4. Pump stdout → muxer chunks ───────────────────────────────────────
   const reader = (proc.stdout as unknown as ReadableStream<Uint8Array>).getReader();
   console.log(TAG, "stdout reader acquired, starting read loop");
   let chunksPosted = 0;
@@ -340,17 +329,139 @@ export async function startScreencast(
           console.log(TAG, "stdout done, chunks posted:", chunksPosted, "bytes:", bytesPosted);
           break;
         }
-        if (value && value.byteLength > 0) {
-          const buf = value.buffer.slice(
-            value.byteOffset,
-            value.byteOffset + value.byteLength,
+        if (!value || value.byteLength === 0) continue;
+        // Copy bytes into a fresh ArrayBuffer — ReadableStream chunk
+        // backing buffers can be reused between reads, so slicing
+        // `value.buffer` at `value.byteOffset`/`byteLength` can race
+        // the stream and yield an empty buffer for any chunk after
+        // the first.
+        const buf = new ArrayBuffer(value.byteLength);
+        new Uint8Array(buf).set(value);
+        const data = new Uint8Array(buf);
+        chunksPosted++;
+        bytesPosted += buf.byteLength;
+        if (chunksPosted === 1 || chunksPosted % 30 === 0) {
+          console.log(
+            TAG,
+            "→ chunk",
+            chunksPosted,
+            "size:",
+            buf.byteLength,
+            "total bytes:",
+            bytesPosted,
+            "hex-prefix:",
+            data.subarray(0, Math.min(8, data.byteLength)),
           );
-          chunksPosted++;
-          bytesPosted += buf.byteLength;
-          worker.postMessage({ type: "chunk", streamId, data: buf }, [buf]);
-          if (chunksPosted === 1 || chunksPosted % 30 === 0) {
-            console.log(TAG, "→ worker chunk", chunksPosted, "size:", buf.byteLength, "total bytes:", bytesPosted);
+        }
+        if (chunksPosted === 1) {
+          console.log(
+            TAG,
+            "first chunk,",
+            data.length,
+            "bytes, hex-prefix:",
+            data.subarray(0, Math.min(8, data.length)),
+          );
+          opts.onProgress?.("first-chunk", `${data.length} bytes`);
+        }
+
+        // Split into NAL units and decide what to do.
+        const nals = splitAnnexBNals(data);
+        if (nals.length === 0) continue;
+        const hasIdr = nals.some((n) => n.type === 5);
+        if (chunksPosted === 1 || chunksPosted % 30 === 0) {
+          console.log(
+            TAG,
+            "chunk",
+            chunksPosted,
+            "size:",
+            data.length,
+            "nal-count:",
+            nals.length,
+            "nal-types:",
+            nals.map((n) => n.type).slice(0, 12).join(","),
+            "hasIdr:",
+            hasIdr,
+          );
+        }
+
+        // Parse SPS/PPS if we haven't already.
+        if (!configSent) {
+          const cfg = parseSpsPps(data);
+          if (cfg) {
+            console.log(TAG, "parsed SPS/PPS, codec:", cfg.codec, "description-bytes:", cfg.description.byteLength);
+            avcConfig = { description: cfg.description };
+            codec = cfg.codec;
+            // Tear down + recreate the muxer so the next addChunk
+            // (the IDR) writes the ftyp+moov with the discovered
+            // codec. The muxer can't have its codec changed
+            // in-place.
+            try {
+              muxer?.finalize();
+            } catch { /* ignore */ }
+            muxer = createMuxerInstance();
+            configSent = true;
           }
+        }
+
+        // Hold back non-IDR chunks until we have the codec config.
+        if (!hasIdr) {
+          pendingChunks.push({
+            data,
+            type: "key",
+            timestampUs: chunkCounter * (1_000_000 / ASSUMED_FPS),
+            durationUs: 1_000_000 / ASSUMED_FPS,
+            meta: avcConfig
+              ? { decoderConfig: { codec: "avc", description: avcConfig.description } }
+              : undefined,
+          });
+          chunkCounter++;
+          continue;
+        }
+
+        // First IDR: flush pending, then push this one.
+        if (!sawKeyframe) {
+          for (const p of pendingChunks) {
+            try {
+              muxer!.addChunk(
+                p.data,
+                "key",
+                p.timestampUs,
+                p.durationUs,
+                p.meta,
+              );
+            } catch (e) {
+              opts.onError(
+                `addVideoChunkRaw (pending) failed: ${
+                  e instanceof Error ? e.message : String(e)
+                }`,
+              );
+              return;
+            }
+          }
+          pendingChunks = [];
+          sawKeyframe = true;
+          console.log(TAG, "first IDR, flushed", pendingChunks.length, "pending chunks");
+        }
+
+        const durationUs = 1_000_000 / ASSUMED_FPS;
+        const timestampUs = chunkCounter * durationUs;
+        chunkCounter++;
+        try {
+          muxer!.addChunk(
+            data,
+            hasIdr ? "key" : "delta",
+            timestampUs,
+            durationUs,
+            avcConfig
+              ? { decoderConfig: { codec: "avc", description: avcConfig.description } }
+              : undefined,
+          );
+        } catch (e) {
+          opts.onError(
+            `addVideoChunkRaw failed: ${
+              e instanceof Error ? e.message : String(e)
+            }`,
+          );
         }
       }
     } catch (e) {
@@ -378,35 +489,20 @@ export async function startScreencast(
     stop: () => {
       if (stopRequested) return;
       stopRequested = true;
+      try { killFn?.(); } catch { /* ignore */ }
+      try { muxer?.finalize(); } catch { /* ignore */ }
       try {
-        killFn?.();
-      } catch {
-        /* ignore */
-      }
-      try {
-        worker.postMessage({ type: "stop", streamId });
-        worker.terminate();
-      } catch {
-        /* ignore */
-      }
-      try {
-        if (videoEl && mediaSource.readyState === "open") {
-          if (sourceBuffer && !sourceBuffer.updating) {
-            try {
-              mediaSource.endOfStream();
-            } catch {
-              /* ignore */
-            }
+        if (mediaSource.readyState === "open") {
+          try {
+            mediaSource.endOfStream();
+          } catch {
+            /* ignore */
           }
         }
       } catch {
         /* ignore */
       }
-      try {
-        URL.revokeObjectURL(objectUrl);
-      } catch {
-        /* ignore */
-      }
+      try { URL.revokeObjectURL(objectUrl); } catch { /* ignore */ }
       try {
         videoEl.removeAttribute("src");
         videoEl.load();
@@ -417,10 +513,6 @@ export async function startScreencast(
   };
 }
 
-/**
- * Read the device's current screen size via `wm size`. Returns null
- * if `wm` isn't available (very old Androids) or the call fails.
- */
 export async function getDeviceScreenSize(
   session: AdbSession,
 ): Promise<{ width: number; height: number } | null> {
@@ -450,10 +542,6 @@ export async function getDeviceScreenSize(
   }
 }
 
-/**
- * Issue a `input` command on the device. Used by the Screencast panel
- * to forward pointer events from the canvas to the device.
- */
 export async function injectInput(
   session: AdbSession,
   cmd:
@@ -495,6 +583,6 @@ export async function injectInput(
     } catch { /* ignore */ }
     try { void proc.kill(); } catch { /* ignore */ }
   } catch {
-    /* ignore — pointer events are best-effort */
+    /* ignore */
   }
 }
