@@ -4591,3 +4591,98 @@ button.danger:hover {
   overflow-y: auto;
   color: rgba(255, 255, 255, 0.85);
 }
+
+.clipboard-panel__primary {
+  background: rgba(80, 160, 255, 0.85) !important;
+  color: #fff !important;
+  font-weight: 600;
+}
+.clipboard-panel__primary:hover:not(:disabled) {
+  background: rgba(80, 160, 255, 1) !important;
+}
+.clipboard-panel__history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 12px;
+  flex: 1;
+  min-height: 0;
+}
+.clipboard-panel__history-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.clipboard-panel__clear {
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.clipboard-panel__clear:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.15);
+}
+.clipboard-panel__clear:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.clipboard-panel__history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
+.clipboard-panel__empty {
+  margin: 0;
+  padding: 12px;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 11px;
+  font-style: italic;
+}
+.clipboard-panel__history-item {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.15);
+}
+.clipboard-panel__history-item--device {
+  border-left: 3px solid rgba(80, 200, 120, 0.7);
+}
+.clipboard-panel__history-item--web {
+  border-left: 3px solid rgba(80, 160, 255, 0.7);
+}
+.clipboard-panel__history-meta {
+  display: flex;
+  gap: 8px;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.55);
+  margin-bottom: 4px;
+  font-family: var(--mono);
+}
+.clipboard-panel__history-source {
+  font-weight: 600;
+}
+.clipboard-panel__history-item--device .clipboard-panel__history-source {
+  color: rgba(80, 200, 120, 0.95);
+}
+.clipboard-panel__history-item--web .clipboard-panel__history-source {
+  color: rgba(80, 160, 255, 0.95);
+}
+.clipboard-panel__history-text {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 160px;
+  overflow-y: auto;
+  color: rgba(255, 255, 255, 0.9);
+  line-height: 1.4;
+}
