@@ -91,6 +91,7 @@ import { LauncherApp }       from "@/components/LauncherApp";
 import { DashApp }           from "@/components/DashApp";
 import { TextEditorApp }     from "@/components/TextEditorApp";
 import { ScreencastPanel }   from "@/components/ScreencastPanel";
+import { ClipboardPanel }    from "@/components/ClipboardPanel";
 
 /**
  * The single source of truth for what apps exist. Workspace reads this list
@@ -291,6 +292,48 @@ export const REGISTERED_APPS: AppDefinition[] = [
     allowMultipleWindows: true,
     description:
       "Live screen stream of the device, with mouse + scroll + drag control.",
+  },
+  {
+    id: "clipboard",
+    title: "Clipboard",
+    // Two overlapping rectangles — classic copy/paste visual.
+    icon: (
+      <svg
+        viewBox="0 0 24 24"
+        width="24"
+        height="24"
+        aria-hidden="true"
+        style={{ display: "block" }}
+      >
+        <rect
+          x="8"
+          y="3"
+          width="11"
+          height="15"
+          rx="2"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+        />
+        <rect
+          x="5"
+          y="6"
+          width="11"
+          height="15"
+          rx="2"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+        />
+      </svg>
+    ),
+    Component: ClipboardPanel,
+    defaultSize: { width: 480, height: 480 },
+    showInDock: true,
+    launchOnStartup: false,
+    allowMultipleWindows: false,
+    description:
+      "Read and write the device clipboard. Two-way bridge with the browser's clipboard.",
   },
   {
     id: "wifi",

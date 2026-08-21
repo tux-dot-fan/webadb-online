@@ -4463,3 +4463,131 @@ button.danger:hover {
 .screencast-btn-cancel:hover {
   background: rgba(255, 255, 255, 0.20);
 }
+
+/* ── Clipboard panel ───────────────────────────────────────────────── */
+.clipboard-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px;
+  height: 100%;
+  overflow-y: auto;
+  font-size: 13px;
+}
+.clipboard-panel__header h2 {
+  margin: 0 0 4px 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+.clipboard-panel__sub {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 12px;
+}
+.clipboard-panel__row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.clipboard-panel__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.clipboard-panel__buttons button {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.clipboard-panel__buttons button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.20);
+}
+.clipboard-panel__buttons button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.clipboard-panel__status {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.7);
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 4px;
+  font-family: var(--mono);
+}
+.clipboard-panel__error {
+  color: #ff6b6b;
+}
+.clipboard-panel__check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  cursor: pointer;
+}
+.clipboard-panel__check input {
+  cursor: pointer;
+}
+.clipboard-panel__editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.clipboard-panel__label {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.6);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.clipboard-panel__textarea {
+  width: 100%;
+  min-height: 160px;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #fff;
+  padding: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.4;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.clipboard-panel__textarea:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.35);
+}
+.clipboard-panel__counts {
+  display: flex;
+  gap: 12px;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: var(--mono);
+}
+.clipboard-panel__last {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  padding-top: 12px;
+}
+.clipboard-panel__pre {
+  margin: 4px 0 0 0;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 120px;
+  overflow-y: auto;
+  color: rgba(255, 255, 255, 0.85);
+}
