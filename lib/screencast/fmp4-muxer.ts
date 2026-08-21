@@ -370,6 +370,12 @@ function buildFragment(
   baseDecodeTime: number,
   timescale: number,
 ): Uint8Array {
+  // screenrecord emits H.264 in annex-B format (NALUs prefixed with
+  // 00 00 00 01 start codes). MSE requires AVC format: NALUs
+  // prefixed with a 4-byte big-endian length. The avcC box's
+  // lengthSizeMinusOne=3 says length fields are 4 bytes. Convert
+  // here before the chunk goes into mdat.
+  sample = annexBToAvc(sample);
   // trun flags we set:
   //   data_offset_present        0x000001
   //   sample_duration_present    0x000200
@@ -507,6 +513,45 @@ function concatBytes(...arrs: Uint8Array[]): Uint8Array {
   for (const a of arrs) {
     out.set(a, off);
     off += a.length;
+  }
+  return out;
+}
+
+/**
+ * Convert H.264 annex-B byte stream (00 00 00 01 start code +
+ * NALU bytes) to AVC byte stream (4-byte big-endian length + NALU
+ * bytes). MSE's SourceBuffer requires AVC format in mdat for H.264
+ * video tracks — annex-B is rejected with a generic SourceBuffer
+ * error that doesn't surface enough context to debug.
+ */
+function annexBToAvc(bytes: Uint8Array): Uint8Array {
+  // First pass: locate all NAL start positions.
+  const positions: number[] = [];
+  for (let i = 0; i < bytes.length - 3; i++) {
+    if (
+      bytes[i] === 0 &&
+      bytes[i + 1] === 0 &&
+      bytes[i + 2] === 0 &&
+      bytes[i + 3] === 1
+    ) {
+      positions.push(i + 4);
+    }
+  }
+  if (positions.length === 0) return bytes; // not annex-B
+  // Second pass: build the converted buffer. For each NALU we
+  // replace the 4-byte start code with a 4-byte big-endian length.
+  // Length stays the same, so total size is unchanged.
+  const out = new Uint8Array(bytes);
+  for (let i = 0; i < positions.length; i++) {
+    const startOfNalData = positions[i];
+    const endOfNalData =
+      i + 1 < positions.length ? positions[i + 1] - 4 : bytes.length;
+    const nalLength = endOfNalData - startOfNalData;
+    // Write length as 4-byte big-endian at positions[i] - 4.
+    out[startOfNalData - 4] = (nalLength >>> 24) & 0xff;
+    out[startOfNalData - 3] = (nalLength >>> 16) & 0xff;
+    out[startOfNalData - 2] = (nalLength >>> 8) & 0xff;
+    out[startOfNalData - 1] = nalLength & 0xff;
   }
   return out;
 }
