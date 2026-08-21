@@ -416,18 +416,22 @@ function buildFragment(
     (0 << 2); // degradation_priority
   trunView.setUint32(28, sampleFlags >>> 0, false);
 
-  // tfhd 32 bytes (with default_sample_flags_present = 0x020000)
-  const tfhd = new Uint8Array(32);
+  // tfhd. With default_sample_flags_present=0x020000 the box contains:
+//   size(4) + 'tfhd'(4) + version+flags(4) + track_id(4) +
+//   default_sample_flags(4) = 20 bytes
+// (Setting default_sample_duration_present or default_sample_size_present
+// would add 4 bytes each; we don't, since trun provides per-sample
+// values.)
+  const tfhd = new Uint8Array(20);
   const tfhdView = new DataView(tfhd.buffer);
-  tfhdView.setUint32(0, 32, false);
+  tfhdView.setUint32(0, 20, false);
   ascii(tfhd, 4, "tfhd");
   tfhdView.setUint32(8, 0x020000, false); // default_sample_flags_present
   tfhdView.setUint32(12, 1, false); // track_id
-  // default_sample_flags same encoding as above
+  // default_sample_flags same encoding as trun sample_flags:
+  // depends_on=1 (delta), is_non_sync=1 (delta) — trun overrides
+  // for IDR frames.
   tfhdView.setUint32(16, sampleFlags >>> 0, false);
-  tfhdView.setUint32(20, 0, false); // default_sample_duration
-  tfhdView.setUint32(24, 0, false); // default_sample_size
-  tfhdView.setUint32(28, 0, false); // default_sample_flags_2
 
   // tfdt 20 bytes (version 0)
   const tfdt = new Uint8Array(20);
@@ -460,11 +464,14 @@ function buildFragment(
 
   // Patch trun's data_offset: from start of moof to first sample
   // byte in mdat = moof.length + mdat_header (8).
-  // trun starts at: 8 (moof header) + 16 (mfhd) + 8 (traf header)
-  //   + 32 (tfhd) + 20 (tfdt) = 84
-  // data_offset field is at trun byte 16, so absolute offset = 84 + 16 = 100.
+  // trun layout in moof: moof-header(8) + mfhd(16) + traf-header(8)
+  //   + tfhd(20) + tfdt(20) + trun-header(8) + ...
+  // data_offset field is at trun byte 16 (after size(4)+'trun'(4)
+  // + version+flags(4) + sample_count(4)).
+  const dataOffsetField =
+    8 + 16 + 8 + 20 + 20 + 16;
   const moofView = new DataView(moof.buffer);
-  moofView.setUint32(100, moof.length + 8, false);
+  moofView.setUint32(dataOffsetField, moof.length + 8, false);
 
   // mdat = 8-byte header + sample data
   const mdat = new Uint8Array(sample.byteLength + 8);
