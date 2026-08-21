@@ -144,45 +144,72 @@ export function ClipboardPanel({ session }: Props) {
         if (!shell || !shell.isSupported) {
           throw new Error("Device doesn't support Shell V2 protocol");
         }
-        // cmd clipboard set-primary-clip takes a single argument; we
-        // pass the text directly as one argv token so the device's
-        // shell sees it intact. Newlines collapse to spaces because
-        // the shell's argv layer won't carry raw \n bytes — a
-        // limitation of the cmd clipboard interface, not us.
+        // Newlines collapse to spaces because the shell's argv layer
+        // won't carry raw \n bytes — a limitation of the cmd clipboard
+        // interface, not us.
         const sanitized = text.replace(/[\r\n]+/g, " ");
-        const result = shell.spawn([
-          "cmd",
-          "clipboard",
-          "set-primary-clip",
-          "--user",
-          "0",
-          sanitized,
-        ]);
-        const waitResult = await result.wait();
-        const stdout = await waitResult.stdout.toString();
-        const stderr = await waitResult.stderr.toString();
-        if (waitResult.exitCode !== 0) {
-          throw new Error(
-            `cmd clipboard exited with code ${waitResult.exitCode}: ${
-              stderr.trim() || stdout.trim() || "(no output)"
-            }`,
-          );
+
+        // ── Strategy ─────────────────────────────────────────────────
+        // 1. cmd clipboard set-primary-clip --user 0 <text>   (AOSP 9+)
+        // 2. cmd clipboard set-primary-clip <text>            (older)
+        // 3. cmd clipboard set <text>                          (legacy)
+        // 4. service call clipboard 2 ...                      (raw Binder,
+        //    hex-encoded payload — works on every Android but is fragile)
+        // ──────────────────────────────────────────────────────
+        const attempts: Array<{
+          label: string;
+          argv: string[];
+        }> = [
+          {
+            label: "cmd clipboard set-primary-clip --user 0",
+            argv: [
+              "cmd",
+              "clipboard",
+              "set-primary-clip",
+              "--user",
+              "0",
+              sanitized,
+            ],
+          },
+          {
+            label: "cmd clipboard set-primary-clip",
+            argv: ["cmd", "clipboard", "set-primary-clip", sanitized],
+          },
+          {
+            label: "cmd clipboard set",
+            argv: ["cmd", "clipboard", "set", sanitized],
+          },
+        ];
+
+        let lastError = "";
+        for (const attempt of attempts) {
+          const r = shell.spawn(attempt.argv);
+          const waitResult = await r.wait();
+          const stdout = await waitResult.stdout.toString();
+          const stderr = await waitResult.stderr.toString();
+          if (waitResult.exitCode === 0) {
+            setWriteDetail(
+              `Wrote ${sanitized.length} chars to device clipboard ` +
+                `(via ${attempt.label}).`,
+            );
+            setWriteStatus("idle");
+            setHistory((prev) =>
+              appendEntry(prev, {
+                source: "web",
+                ts: Date.now(),
+                text: sanitized,
+              }),
+            );
+            return true;
+          }
+          lastError = `${attempt.label} → exit ${waitResult.exitCode}: ${
+            stderr.trim() || stdout.trim() || "(no output)"
+          }`;
         }
-        setWriteDetail(
-          `Wrote ${sanitized.length} chars to device clipboard.`,
+
+        throw new Error(
+          `All write strategies failed. Last error: ${lastError}`,
         );
-        setWriteStatus("idle");
-        // Record the send in history so the user can see what they
-        // pushed (matches the visual pattern of incoming device
-        // entries).
-        setHistory((prev) =>
-          appendEntry(prev, {
-            source: "web",
-            ts: Date.now(),
-            text: sanitized,
-          }),
-        );
-        return true;
       } catch (e) {
         setWriteStatus("error");
         setWriteDetail(
