@@ -139,32 +139,27 @@ export function splitAnnexBNals(
   return nals;
 }
 
-function copyToBuffer(data: Uint8Array): ArrayBuffer {
-  const out = new ArrayBuffer(data.byteLength);
-  new Uint8Array(out).set(data);
-  return out;
-}
-
 /**
- * Create a muxer + a flag-bit tracker for init-vs-media output.
+ * Create a muxer that demuxes its own output into init segments
+ * (ftyp + moov) and per-fragment media segments (moof + mdat).
  *
- * `initialCodec` is the codec string the caller already discovered
- * from the stream's SPS (e.g. `avc1.640028`). We pass it into the
- * muxer at construction time so the resulting init segment has the
- * correct codec in its moov box — without this, mp4-muxer falls
- * back to its placeholder codec and MSE can't open the stream.
+ * Background: with `fastStart: "fragmented"`, mp4-muxer fires
+ * `onData` three different ways across a stream's lifetime:
  *
- * `onInit(initBuf)` fires once with the ftyp+moov segment.
- * `onMedia(mediaBuf)` fires once per moof+mdat fragment.
+ *   1. From the constructor's _writeHeader: just the ftyp box.
+ *   2. From the first fragment's finalization: moov + moof + mdat
+ *      written as one contiguous block.
+ *   3. From every subsequent fragment's finalization: just moof + mdat.
  *
- * mp4-muxer's StreamTarget fires `onData(data, position)` whenever
- * it writes a chunk to the output. The first call (position=0)
- * is the init segment (ftyp + moov), every subsequent call is a
- * moof+mdat fragment. mp4-muxer warns if we don't take the second
- * argument — and worse, ignoring the position argument is what
- * causes broken output: we couldn't tell init from media without
- * some signal. With `position` available, the rule is simple:
- * position 0 → init segment; non-zero → media fragment.
+ * The naive `position === 0` heuristic fails because ftyp is also
+ * at position 0 — so we'd send the 28-byte ftyp as the init segment
+ * and treat the moov that arrives at position 28 as a media chunk.
+ * MSE then chokes on a half-baked init.
+ *
+ * What we actually want: deliver everything BEFORE the first moof
+ * as one init segment, then everything else as media segments.
+ * We detect the first moof by scanning for the 'moof' fourcc at
+ * every onData payload's start — that's how we know the boundary.
  */
 export function createMuxer(
   width: number,
@@ -173,17 +168,67 @@ export function createMuxer(
   onInit: (initBuf: ArrayBuffer) => void,
   onMedia: (mediaBuf: ArrayBuffer) => void,
 ): MuxerHandle {
+  // Concatenate all init-segment chunks (ftyp then moov) into one
+  // ArrayBuffer we hand off once the first moof arrives.
+  const initChunks: Uint8Array[] = [];
+  let initByteLength = 0;
+  let initSent = false;
+  // We have to hold init chunks in their own buffers because mp4-
+  // muxer reuses its underlying ArrayBuffer across onData calls.
+
+  const flushInit = (): void => {
+    if (initSent || initChunks.length === 0) return;
+    initSent = true;
+    const out = new ArrayBuffer(initByteLength);
+    const view = new Uint8Array(out);
+    let off = 0;
+    for (const chunk of initChunks) {
+      view.set(chunk, off);
+      off += chunk.byteLength;
+    }
+    initChunks.length = 0;
+    onInit(out);
+  };
+
   const muxer = new Muxer({
     target: new StreamTarget({
-      onData: (data: Uint8Array, position: number) => {
-        const buf = copyToBuffer(data);
-        if (position === 0) {
-          // Init segment — always the first write, always at offset 0.
-          onInit(buf);
+      onData: (data: Uint8Array, _position: number) => {
+        // Detect the first moof — start-of-payload is the 'moof'
+        // fourcc (0x6d 0x6f 0x6f 0x66) inside a box header. We
+        // check positions 4..7 because bytes 0..3 are the box
+        // size (32-bit big-endian) and the fourcc lives at 4..7.
+        // (ftyp and moov are not moof.)
+        const startsWithMoof =
+          data.byteLength >= 8 &&
+          data[4] === 0x6d /* m */ &&
+          data[5] === 0x6f /* o */ &&
+          data[6] === 0x6f /* o */ &&
+          data[7] === 0x66 /* f */;
+
+        if (!initSent && !startsWithMoof) {
+          // Still part of the init segment. Buffer until we see
+          // the first moof.
+          const copy = new Uint8Array(data.byteLength);
+          copy.set(data);
+          initByteLength += copy.byteLength;
+          initChunks.push(copy);
           return;
         }
-        // Subsequent writes are moof+mdat fragments.
-        onMedia(buf);
+
+        if (!initSent && startsWithMoof) {
+          // The moof is starting now. Any previously-buffered init
+          // bytes (ftyp + moov) become the init segment; this
+          // payload is the first media fragment.
+          flushInit();
+          const copy = new Uint8Array(data.byteLength);
+          copy.set(data);
+          onMedia(copyToBuffer(copy));
+          return;
+        }
+
+        // Past the init segment — every subsequent onData is a
+        // moof+mdat media fragment.
+        onMedia(copyToBuffer(data));
       },
     }),
     video: {
@@ -192,17 +237,10 @@ export function createMuxer(
       height,
       frameRate: 30,
     },
-    // mp4-muxer writes `videoConfig.codec` into the moov's avcC box.
-    // It defaults to the raw codec we passed ('avc'); we need it
-    // to be the full avc1.PPCCLL string instead. There's no public
-    // option for this, but a 'avc' codec string with an explicit
-    // 'description' (avcC box) on the first addVideoChunkRaw call
-    // will override the moov's codec entry — so we no longer need
-    // the placeholder to be 'avc1.PPCCLL'. The SourceBuffer call
-    // on the main thread uses `initialCodec` (the real one).
     fastStart: "fragmented",
     firstTimestampBehavior: "offset",
   });
+
   return {
     addChunk(data, type, timestampUs, durationUs, meta) {
       muxer.addVideoChunkRaw(data, type, timestampUs, durationUs, meta);
@@ -210,9 +248,16 @@ export function createMuxer(
     finalize() {
       try {
         muxer.finalize();
+        flushInit();
       } catch {
         /* ignore */
       }
     },
   };
+}
+
+function copyToBuffer(data: Uint8Array): ArrayBuffer {
+  const out = new ArrayBuffer(data.byteLength);
+  new Uint8Array(out).set(data);
+  return out;
 }

@@ -317,7 +317,9 @@ export async function startScreencast(
   opts.onReady?.();
 
   // ── 4. Pump stdout → muxer chunks ───────────────────────────────────────
-  const reader = (proc.stdout as unknown as ReadableStream<Uint8Array>).getReader();
+  console.log(TAG, "proc object:", proc, "stdout type:", typeof proc.stdout, "stdout constructor:", (proc.stdout as { constructor?: { name?: string } })?.constructor?.name);
+  const stdout = proc.stdout as unknown as ReadableStream<Uint8Array>;
+  const reader = stdout.getReader();
   console.log(TAG, "stdout reader acquired, starting read loop");
   let chunksPosted = 0;
   let bytesPosted = 0;

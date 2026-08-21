@@ -271,8 +271,26 @@ export function ScreencastPanel({ session }: AppProps) {
 
   useEffect(() => {
     if (!containerRef.current) return;
+    let lastW = 0;
+    let lastH = 0;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const ro = new ResizeObserver(() => {
+    const ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (!entry) return;
+      const w = entry.contentRect.width | 0;
+      const h = entry.contentRect.height | 0;
+      // ResizeObserver fires once on attach with the initial size;
+      // ignore that initial call so we don't bounce-stop the just-
+      // started pipeline.
+      if (lastW === 0 && lastH === 0) {
+        lastW = w;
+        lastH = h;
+        return;
+      }
+      // Only restart if the size actually changed by more than 2px.
+      if (Math.abs(w - lastW) < 2 && Math.abs(h - lastH) < 2) return;
+      lastW = w;
+      lastH = h;
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
         if (status === "running" && pipelineRef.current) {
