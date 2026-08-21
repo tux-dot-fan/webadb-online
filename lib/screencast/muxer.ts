@@ -244,6 +244,30 @@ export function createMuxer(
   return {
     addChunk(data, type, timestampUs, durationUs, meta) {
       muxer.addVideoChunkRaw(data, type, timestampUs, durationUs, meta);
+      // mp4-muxer only emits onData when it finalizes a fragment,
+      // which by default waits for ≥1 second of samples to accu-
+      // mulate. For live streaming we want each chunk's ftyp+moov
+      // +moof+mdat to land on the main thread within a few ms of
+      // being muxed. Force-flush the streaming writer after every
+      // chunk by reaching into mp4-muxer's private state. There's
+      // no public API for "flush now" in mp4-muxer 5.x; the only
+      // public way to emit is to call finalize() which locks the
+      // muxer. Hack: call _finalizeFragment(false) + _writer.flush()
+      // via the private symbol keys.
+      const internal = muxer as unknown as {
+        _finalizeFragment?: (arg: boolean) => void;
+        _writer?: { flush: () => void };
+      };
+      try {
+        internal._finalizeFragment?.(false);
+      } catch {
+        /* _finalizeFragment throws if no currentChunk yet — fine */
+      }
+      try {
+        internal._writer?.flush();
+      } catch {
+        /* ignore */
+      }
     },
     finalize() {
       try {
