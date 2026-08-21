@@ -4509,6 +4509,7 @@ button.danger:hover {
   border-radius: 4px;
   font-family: var(--mono);
   word-break: break-word;
+  white-space: pre-wrap;
 }
 .clipboard-panel__error {
   color: var(--danger);

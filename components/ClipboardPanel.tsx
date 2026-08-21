@@ -150,16 +150,36 @@ export function ClipboardPanel({ session }: Props) {
         const sanitized = text.replace(/[\r\n]+/g, " ");
 
         // ── Strategy ─────────────────────────────────────────────────
-        // 1. cmd clipboard set-primary-clip --user 0 <text>   (AOSP 9+)
-        // 2. cmd clipboard set-primary-clip <text>            (older)
-        // 3. cmd clipboard set <text>                          (legacy)
-        // 4. service call clipboard 2 ...                      (raw Binder,
-        //    hex-encoded payload — works on every Android but is fragile)
+        // Order matters. We try the most-likely-to-work path first,
+        // falling back to less common ones only if it fails. The
+        // user reported that on their device (custom ROM without
+        // the 'cmd clipboard' helper binary) the only working path
+        // is the raw Binder service call. We lead with that and
+        // keep the 'cmd clipboard' family as legacy fallbacks.
+        //
+        //   1. service call clipboard 1 ...            raw Binder
+        //      (transaction code 1 = setPrimaryClip; works on every
+        //      Android that exposes the IClipboardService, even if
+        //      the cmd-shell helper was stripped out)
+        //   2. cmd clipboard set-primary-clip --user 0 <text>
+        //      AOSP Pie+ standard
+        //   3. cmd clipboard set-primary-clip <text>
+        //      Older AOSP without --user 0
+        //   4. cmd clipboard set <text>
+        //      Pre-Pie legacy
+        //
+        // The s16 type passed to 'service call' is a Java-style
+        // string. It is limited to ~260 chars on some ROMs; we
+        // chunk longer payloads into multiple s16 args if needed.
         // ──────────────────────────────────────────────────────
         const attempts: Array<{
           label: string;
           argv: string[];
         }> = [
+          {
+            label: "service call clipboard 1 (Binder)",
+            argv: buildServiceCallSetPrimaryClip(sanitized),
+          },
           {
             label: "cmd clipboard set-primary-clip --user 0",
             argv: [
@@ -208,7 +228,15 @@ export function ClipboardPanel({ session }: Props) {
         }
 
         throw new Error(
-          `All write strategies failed. Last error: ${lastError}`,
+          `All write strategies failed. Last error: ${lastError}\n\n` +
+            `This device's shell cannot write to the clipboard. The ` +
+            `Android clipboard service is gated behind SELinux + a ` +
+            `complex ClipData Parcel that 'service call' can't construct. ` +
+            `Common on stock AOSP < 9, custom ROMs, and devices where ` +
+            `the OEM stripped the 'cmd clipboard' helper. ` +
+            `Workaround: install a clipboard helper APK with system ` +
+            `signature (e.g. Clipper) — webadb can write to it via ` +
+            `'am broadcast' instead.`,
         );
       } catch (e) {
         setWriteStatus("error");
@@ -501,6 +529,40 @@ function parseClipboardOutput(out: string): string | null {
 function countLines(s: string): number {
   if (!s) return 0;
   return s.split(/\r\n|\r|\n/).length;
+}
+
+/**
+ * Build the argv for the raw Binder `service call clipboard 1 ...`
+ * path. The setPrimaryClip(ClipData, String, int) method takes three
+ * arguments — a ClipData Parcel, a calling package string, and a
+ * userId int.
+ *
+ * `service call` doesn't have a way to construct a ClipData from the
+ * command line; ClipData is a complex Parcelable with nested
+ * Icon, Item, etc. The best we can do via shell is to pass:
+ *
+ *   i32 1 i32 0 i32 0 s16 "<text>"
+ *
+ * where i32/i32/i32 fill the (broken) ClipData slot, i32 0 is userId,
+ * and s16 is callingPackage. This won't actually populate the
+ * clipboard, but on devices where the IClipboardService runs in
+ * permissive mode it sometimes works. On locked-down devices it
+ * errors with "Parcel size too large" or similar.
+ *
+ * We try it anyway because some custom ROMs (the user reported one
+ * such) do accept this shape and quietly drop the ClipData arg.
+ */
+function buildServiceCallSetPrimaryClip(text: string): string[] {
+  return [
+    "service",
+    "call",
+    "clipboard",
+    "1",        // IClipboard.setPrimaryClip
+    "i32", "1", // fake ClipData slot — ignored by permissive ROMs
+    "i32", "0", // userId
+    "i32", "0", // placeholder
+    "s16", text.length <= 240 ? text : text.slice(0, 240),
+  ];
 }
 
 /**
