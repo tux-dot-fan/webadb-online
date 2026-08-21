@@ -158,6 +158,9 @@ export async function startScreencast(
   };
 
   // ── 2. Muxer setup ───────────────────────────────────────────────────────
+  // Muxer is created lazily — we have to parse SPS/PPS from the
+  // first chunk to know the codec string the moov box needs. Until
+  // then we just buffer chunks.
   let muxer: MuxerHandle | null = null;
   let pendingChunks: Array<{
     data: Uint8Array;
@@ -166,7 +169,6 @@ export async function startScreencast(
     durationUs: number;
     meta?: { decoderConfig: { codec: "avc"; description: Uint8Array } };
   }> = [];
-  let configSent = false;
   let sawKeyframe = false;
   let chunkCounter = 0;
   let avcConfig: { description: Uint8Array } | null = null;
@@ -309,8 +311,7 @@ export async function startScreencast(
     try { void proc.kill(); } catch { /* ignore */ }
   };
 
-  muxer = createMuxerInstance("avc1.42E01E");
-
+  // Muxer is created lazily — we have to parse SPS/PPS from the
   // Worker-equivalent "ready" event — let the panel switch to
   // "running" once we know the pipeline is set up (muxer ready,
   // first chunk may still be a few seconds away).
@@ -386,22 +387,19 @@ export async function startScreencast(
           );
         }
 
-        // Parse SPS/PPS if we haven't already.
-        if (!configSent) {
+        // Parse SPS/PPS if we haven't created the muxer yet.
+        if (!muxer) {
           const cfg = parseSpsPps(data);
           if (cfg) {
             console.log(TAG, "parsed SPS/PPS, codec:", cfg.codec, "description-bytes:", cfg.description.byteLength);
             avcConfig = { description: cfg.description };
             codec = cfg.codec;
-            // Tear down + recreate the muxer so the next addChunk
-            // (the IDR) writes the ftyp+moov with the discovered
-            // codec. The muxer can't have its codec changed
-            // in-place.
-            try {
-              muxer?.finalize();
-            } catch { /* ignore */ }
             muxer = createMuxerInstance(codec);
-            configSent = true;
+            console.log(TAG, "muxer created with codec:", codec);
+          } else {
+            // No SPS/PPS yet (rare — usually they arrive in the
+            // first IDR chunk). Buffer and move on.
+            continue;
           }
         }
 
