@@ -25,12 +25,7 @@
 
 import type { AdbSession } from "@/lib/adb-client";
 import type { ProgressKind } from "./types";
-import {
-  parseSpsPps,
-  splitAnnexBNals,
-  createMuxer,
-  type MuxerHandle,
-} from "./muxer";
+import { parseSpsPps, Fmp4Muxer } from "./fmp4-muxer";
 
 // All console output is prefixed with [screencast] so it can be
 // filtered easily in DevTools.
@@ -159,27 +154,18 @@ export async function startScreencast(
 
   // ── 2. Muxer setup ───────────────────────────────────────────────────────
   // Muxer is created lazily — we have to parse SPS/PPS from the
-  // first chunk to know the codec string the moov box needs. Until
-  // then we just buffer chunks.
-  let muxer: MuxerHandle | null = null;
-  let pendingChunks: Array<{
-    data: Uint8Array;
-    type: "key" | "delta";
-    timestampUs: number;
-    durationUs: number;
-    meta?: { decoderConfig: { codec: "avc"; description: Uint8Array } };
-  }> = [];
-  let sawKeyframe = false;
+  // first chunk to know the avcC box the moov needs. Until then
+  // we just drop chunks.
+  let muxer: Fmp4Muxer | null = null;
   let chunkCounter = 0;
-  let avcConfig: { description: Uint8Array } | null = null;
   let codec = "avc1.42E01E";
 
-  const createMuxerInstance = (initialCodec: string): MuxerHandle => {
-    return createMuxer(
-      encodedWidth,
-      encodedHeight,
-      initialCodec,
-      (initBuf) => {
+  const createMuxerInstance = (initialCodec: string): Fmp4Muxer => {
+    return new Fmp4Muxer({
+      width: encodedWidth,
+      height: encodedHeight,
+      timescale: 30_000,
+      onInit: (initBuf) => {
         console.log(TAG, "init segment received, codec:", initialCodec, "bytes:", initBuf.byteLength, "hex-prefix:", new Uint8Array(initBuf, 0, Math.min(8, initBuf.byteLength)));
         sourceOpenPromise.then(() => {
           if (stopRequested) return;
@@ -246,7 +232,7 @@ export async function startScreencast(
           }
         });
       },
-      (mediaBuf) => {
+      onMedia: (mediaBuf) => {
         console.log(TAG, "media chunk received,", mediaBuf.byteLength, "bytes, sourceBuffer:", !!sourceBuffer, "pendingMedia.length:", pendingMedia.length);
         if (!sourceBuffer) {
           pendingMedia.push(mediaBuf);
@@ -277,7 +263,7 @@ export async function startScreencast(
           });
         }
       },
-    );
+    });
   };
 
   // ── 3. Spawn screenrecord on the device ──────────────────────────────────
@@ -367,101 +353,47 @@ export async function startScreencast(
           opts.onProgress?.("first-chunk", `${data.length} bytes`);
         }
 
-        // Split into NAL units and decide what to do.
-        const nals = splitAnnexBNals(data);
-        if (nals.length === 0) continue;
-        const hasIdr = nals.some((n) => n.type === 5);
-        if (chunksPosted === 1 || chunksPosted % 30 === 0) {
-          console.log(
-            TAG,
-            "chunk",
-            chunksPosted,
-            "size:",
-            data.length,
-            "nal-count:",
-            nals.length,
-            "nal-types:",
-            nals.map((n) => n.type).slice(0, 12).join(","),
-            "hasIdr:",
-            hasIdr,
-          );
-        }
-
         // Parse SPS/PPS if we haven't created the muxer yet.
         if (!muxer) {
           const cfg = parseSpsPps(data);
           if (cfg) {
             console.log(TAG, "parsed SPS/PPS, codec:", cfg.codec, "description-bytes:", cfg.description.byteLength);
-            avcConfig = { description: cfg.description };
             codec = cfg.codec;
             muxer = createMuxerInstance(codec);
             console.log(TAG, "muxer created with codec:", codec);
+            muxer.setCodec(cfg.description);
           } else {
             // No SPS/PPS yet (rare — usually they arrive in the
-            // first IDR chunk). Buffer and move on.
+            // first IDR chunk). Drop and move on.
             continue;
           }
         }
 
-        // Hold back non-IDR chunks until we have the codec config.
-        if (!hasIdr) {
-          pendingChunks.push({
-            data,
-            type: "key",
-            timestampUs: chunkCounter * (1_000_000 / ASSUMED_FPS),
-            durationUs: 1_000_000 / ASSUMED_FPS,
-            meta: avcConfig
-              ? { decoderConfig: { codec: "avc", description: avcConfig.description } }
-              : undefined,
-          });
-          chunkCounter++;
-          continue;
-        }
-
-        // First IDR: flush pending, then push this one.
-        if (!sawKeyframe) {
-          for (const p of pendingChunks) {
-            try {
-              muxer!.addChunk(
-                p.data,
-                "key",
-                p.timestampUs,
-                p.durationUs,
-                p.meta,
-              );
-            } catch (e) {
-              opts.onError(
-                `addVideoChunkRaw (pending) failed: ${
-                  e instanceof Error ? e.message : String(e)
-                }`,
-              );
-              return;
+        // Detect IDR by looking for NAL type 5 in the chunk.
+        let hasIdr = false;
+        for (let i = 0; i < data.length - 4; i++) {
+          if (
+            data[i] === 0 &&
+            data[i + 1] === 0 &&
+            data[i + 2] === 0 &&
+            data[i + 3] === 1
+          ) {
+            if ((data[i + 4] & 0x1f) === 5) {
+              hasIdr = true;
+              break;
             }
           }
-          pendingChunks = [];
-          sawKeyframe = true;
-          console.log(TAG, "first IDR, flushed", pendingChunks.length, "pending chunks");
         }
 
         const durationUs = 1_000_000 / ASSUMED_FPS;
         const timestampUs = chunkCounter * durationUs;
         chunkCounter++;
-        try {
-          muxer!.addChunk(
-            data,
-            hasIdr ? "key" : "delta",
-            timestampUs,
-            durationUs,
-            avcConfig
-              ? { decoderConfig: { codec: "avc", description: avcConfig.description } }
-              : undefined,
-          );
-        } catch (e) {
-          opts.onError(
-            `addVideoChunkRaw failed: ${
-              e instanceof Error ? e.message : String(e)
-            }`,
-          );
+        muxer!.addChunk(data, hasIdr ? "key" : "delta", timestampUs);
+        if (hasIdr) {
+          opts.onProgress?.("first-frame", `${data.byteLength} bytes`);
+          if (chunksPosted === 1) {
+            console.log(TAG, "first IDR pushed through muxer");
+          }
         }
       }
     } catch (e) {
@@ -490,7 +422,8 @@ export async function startScreencast(
       if (stopRequested) return;
       stopRequested = true;
       try { killFn?.(); } catch { /* ignore */ }
-      try { muxer?.finalize(); } catch { /* ignore */ }
+      // Fmp4Muxer has no finalize() — the init segment is written once
+      // on setCodec() and there's no resource to release.
       try {
         if (mediaSource.readyState === "open") {
           try {
