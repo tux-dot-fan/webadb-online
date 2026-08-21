@@ -140,7 +140,10 @@ function buildMoov(
   mvhdView.setUint32(12, 0, false); // creation_time
   mvhdView.setUint32(16, 0, false); // modification_time
   mvhdView.setUint32(20, timescale, false);
-  mvhdView.setUint32(24, 0, false); // duration = 0 for live
+  // For live streams mp4-muxer uses duration=0, but some MSE
+  // implementations (Chromium-based) reject it. Use a very large
+  // duration that says "indefinite live" — 2^31-1 (int max).
+  mvhdView.setUint32(24, 0x7fffffff, false);
   mvhdView.setUint32(28, 0x00010000, false); // rate 1.0
   mvhdView.setUint16(32, 0x0100, false); // volume 1.0
   // reserved 10 bytes zeroed (offset 34..43)
@@ -161,7 +164,7 @@ function buildMoov(
   tkhdView.setUint32(16, 0, false); // modification_time
   tkhdView.setUint32(20, 1, false); // track_id
   tkhdView.setUint32(24, 0, false); // reserved
-  tkhdView.setUint32(28, 0, false); // duration
+  tkhdView.setUint32(28, 0x7fffffff, false); // duration (live)
   tkhdView.setUint16(40, 0, false); // layer
   tkhdView.setUint16(42, 0, false); // alternate_group
   tkhdView.setUint16(44, 0, false); // volume
@@ -181,7 +184,7 @@ function buildMoov(
   mdhdView.setUint32(12, 0, false);
   mdhdView.setUint32(16, 0, false);
   mdhdView.setUint32(20, timescale, false);
-  mdhdView.setUint32(24, 0, false); // duration
+  mdhdView.setUint32(24, 0x7fffffff, false); // duration (live)
   mdhdView.setUint16(28, 0x55c4, false); // language (und)
   mdhdView.setUint16(30, 0, false);
 
@@ -323,10 +326,37 @@ function buildMoov(
     concatBytes(tkhd, mdia),
   );
 
-  // moov = mvhd + trak
+  // trex 32 bytes (per-track defaults for fragments)
+  const trex = new Uint8Array(32);
+  const trexView = new DataView(trex.buffer);
+  trexView.setUint32(0, 32, false);
+  ascii(trex, 4, "trex");
+  trexView.setUint32(8, 0, false); // version
+  trexView.setUint32(12, 1, false); // track_id
+  trexView.setUint32(16, 1, false); // default_sample_description_index
+  trexView.setUint32(20, 0, false); // default_sample_duration (0 = use trun)
+  trexView.setUint32(24, 0, false); // default_sample_size (0 = use trun)
+  // default_sample_flags — same encoding as trun sample_flags.
+  // Use depends_on=1, is_non_sync=1 so unknown samples default to
+  // delta. Keyframes will override via trun's sample_flags.
+  const trexSampleFlags =
+    (0 << 30) | // reserved
+    (0 << 28) | // is_leading
+    (1 << 26) | // sample_depends_on (depends on others)
+    (0 << 24) | // sample_is_depended_on
+    (0 << 22) | // sample_has_redundancy
+    (0 << 19) | // sample_padding_value
+    (1 << 18) | // is_non_sync_sample (delta)
+    (0 << 2); // degradation_priority
+  trexView.setUint32(28, trexSampleFlags >>> 0, false);
+
+  // mvex = trex
+  const mvex = box("mvex", trex);
+
+  // moov = mvhd + trak + mvex
   const moov = box(
     "moov",
-    concatBytes(mvhd, trak),
+    concatBytes(mvhd, trak, mvex),
   );
 
   return moov;
@@ -360,18 +390,26 @@ function buildFragment(
   trunView.setUint32(16, 0, false); // data_offset (patched below)
   trunView.setUint32(20, Math.max(1, Math.round(timescale / 30)), false); // sample_duration (1 frame)
   trunView.setUint32(24, sample.byteLength, false);
-  // sample_flags: is_leading=0, depends_on=1, is_depended_on=0,
-  // has_redundancy=0, padding=0, is_non_sync_sample=!isKey,
-  // degradation_priority=0
-  // Layout (bits): reserved(4) | is_leading(2) | depends_on(2) |
-  //                is_depended_on(2) | has_redundancy(2) |
-  //                padding(3) | is_non_sync_sample(1) |
-  //                degradation_priority(16)
+  // sample_flags per ISO/IEC 14496-12.
+// Layout (32 bits, MSB first):
+//   bit(4)   reserved
+//   bit(2)   is_leading
+//   bit(2)   sample_depends_on       (1=depends, 2=independent/I-frame)
+//   bit(2)   sample_is_depended_on   (1=others depend on this)
+//   bit(2)   sample_has_redundancy
+//   bit(3)   sample_padding_value
+//   bit(1)   sample_is_non_sync_sample (1=delta, 0=key)
+//   bit(16)  sample_degradation_priority
+//
+// For IDR keyframe:  depends_on=2 (independent), is_non_sync=0
+// For delta frame:   depends_on=1 (depends),     is_non_sync=1
+  const dependsOn = isKey ? 2 : 1;
+  const isDependedOn = isKey ? 1 : 0;
   const sampleFlags =
     (0 << 30) | // reserved
     (0 << 28) | // is_leading
-    (1 << 26) | // sample_depends_on
-    (0 << 24) | // sample_is_depended_on
+    (dependsOn << 26) | // sample_depends_on
+    (isDependedOn << 24) | // sample_is_depended_on
     (0 << 22) | // sample_has_redundancy
     (0 << 19) | // sample_padding_value
     ((isKey ? 0 : 1) << 18) | // is_non_sync_sample
