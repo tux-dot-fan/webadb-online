@@ -4473,15 +4473,17 @@ button.danger:hover {
   height: 100%;
   overflow-y: auto;
   font-size: 13px;
+  color: var(--text);
 }
 .clipboard-panel__header h2 {
   margin: 0 0 4px 0;
   font-size: 16px;
   font-weight: 600;
+  color: var(--text);
 }
 .clipboard-panel__sub {
   margin: 0;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-dim);
   font-size: 12px;
 }
 .clipboard-panel__row {
@@ -4495,43 +4497,33 @@ button.danger:hover {
   gap: 8px;
 }
 .clipboard-panel__buttons button {
-  background: rgba(255, 255, 255, 0.12);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  border-radius: 6px;
-  padding: 6px 12px;
+  /* Inherit the global button styling — keep our override minimal. */
   font-size: 12px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-.clipboard-panel__buttons button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.20);
-}
-.clipboard-panel__buttons button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 .clipboard-panel__status {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.7);
-  padding: 4px 8px;
-  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-dim);
+  padding: 6px 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-family: var(--mono);
+  word-break: break-word;
 }
 .clipboard-panel__error {
-  color: #ff6b6b;
+  color: var(--danger);
 }
 .clipboard-panel__check {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--text);
   cursor: pointer;
 }
 .clipboard-panel__check input {
   cursor: pointer;
+  accent-color: var(--accent);
 }
 .clipboard-panel__editor {
   display: flex;
@@ -4540,18 +4532,18 @@ button.danger:hover {
 }
 .clipboard-panel__label {
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--text-dim);
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 .clipboard-panel__textarea {
   width: 100%;
-  min-height: 160px;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(255, 255, 255, 0.15);
+  min-height: 140px;
+  background: var(--bg);
+  border: 1px solid var(--border);
   border-radius: 6px;
-  color: #fff;
+  color: var(--text);
   padding: 8px;
   font-family: var(--mono);
   font-size: 12px;
@@ -4561,27 +4553,27 @@ button.danger:hover {
 }
 .clipboard-panel__textarea:focus {
   outline: none;
-  border-color: rgba(255, 255, 255, 0.35);
+  border-color: var(--accent);
 }
 .clipboard-panel__counts {
   display: flex;
   gap: 12px;
   font-size: 11px;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--text-dim);
   font-family: var(--mono);
 }
 .clipboard-panel__last {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid var(--border);
   padding-top: 12px;
 }
 .clipboard-panel__pre {
   margin: 4px 0 0 0;
   padding: 8px;
-  background: rgba(0, 0, 0, 0.2);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
   border-radius: 4px;
   font-family: var(--mono);
   font-size: 11px;
@@ -4589,22 +4581,26 @@ button.danger:hover {
   word-break: break-word;
   max-height: 120px;
   overflow-y: auto;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--text);
 }
 
 .clipboard-panel__primary {
-  background: rgba(80, 160, 255, 0.85) !important;
-  color: #fff !important;
+  /* Override the global button styling to make this stand out as
+     the primary action without needing a `primary` class. */
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: var(--on-accent) !important;
   font-weight: 600;
 }
 .clipboard-panel__primary:hover:not(:disabled) {
-  background: rgba(80, 160, 255, 1) !important;
+  background: var(--accent-strong) !important;
+  border-color: var(--accent-strong) !important;
 }
 .clipboard-panel__history {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-top: 1px solid var(--border);
   padding-top: 12px;
   flex: 1;
   min-height: 0;
@@ -4615,20 +4611,8 @@ button.danger:hover {
   align-items: center;
 }
 .clipboard-panel__clear {
-  background: rgba(255, 255, 255, 0.08);
-  color: rgba(255, 255, 255, 0.7);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 4px;
-  padding: 2px 8px;
   font-size: 11px;
-  cursor: pointer;
-}
-.clipboard-panel__clear:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.15);
-}
-.clipboard-panel__clear:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+  padding: 2px 8px;
 }
 .clipboard-panel__history-list {
   display: flex;
@@ -4642,38 +4626,46 @@ button.danger:hover {
   margin: 0;
   padding: 12px;
   text-align: center;
-  color: rgba(255, 255, 255, 0.4);
+  color: var(--text-dim);
   font-size: 11px;
   font-style: italic;
 }
 .clipboard-panel__history-item {
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 6px 8px;
-  background: rgba(0, 0, 0, 0.15);
+  background: var(--bg-elev);
 }
 .clipboard-panel__history-item--device {
-  border-left: 3px solid rgba(80, 200, 120, 0.7);
+  border-left: 3px solid var(--success);
 }
 .clipboard-panel__history-item--web {
-  border-left: 3px solid rgba(80, 160, 255, 0.7);
+  border-left: 3px solid var(--accent);
 }
 .clipboard-panel__history-meta {
   display: flex;
   gap: 8px;
   font-size: 10px;
-  color: rgba(255, 255, 255, 0.55);
+  color: var(--text-dim);
   margin-bottom: 4px;
   font-family: var(--mono);
 }
 .clipboard-panel__history-source {
   font-weight: 600;
+  color: var(--text);
 }
 .clipboard-panel__history-item--device .clipboard-panel__history-source {
-  color: rgba(80, 200, 120, 0.95);
+  color: var(--success);
 }
 .clipboard-panel__history-item--web .clipboard-panel__history-source {
-  color: rgba(80, 160, 255, 0.95);
+  color: var(--accent);
+}
+.clipboard-panel__history-time {
+  color: var(--text-dim);
+}
+.clipboard-panel__history-len {
+  color: var(--text-dim);
+  margin-left: auto;
 }
 .clipboard-panel__history-text {
   margin: 0;
@@ -4683,6 +4675,6 @@ button.danger:hover {
   word-break: break-word;
   max-height: 160px;
   overflow-y: auto;
-  color: rgba(255, 255, 255, 0.9);
+  color: var(--text);
   line-height: 1.4;
 }
