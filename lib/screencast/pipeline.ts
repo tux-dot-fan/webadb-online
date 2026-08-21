@@ -172,24 +172,24 @@ export async function startScreencast(
   let avcConfig: { description: Uint8Array } | null = null;
   let codec = "avc1.42E01E";
 
-  const createMuxerInstance = (): MuxerHandle => {
+  const createMuxerInstance = (initialCodec: string): MuxerHandle => {
     return createMuxer(
       encodedWidth,
       encodedHeight,
-      (initBuf, initCodec) => {
-        codec = initCodec;
-        console.log(TAG, "init segment received, codec:", initCodec, "bytes:", initBuf.byteLength, "hex-prefix:", new Uint8Array(initBuf, 0, Math.min(8, initBuf.byteLength)));
+      initialCodec,
+      (initBuf) => {
+        console.log(TAG, "init segment received, codec:", initialCodec, "bytes:", initBuf.byteLength, "hex-prefix:", new Uint8Array(initBuf, 0, Math.min(8, initBuf.byteLength)));
         sourceOpenPromise.then(() => {
           if (stopRequested) return;
           try {
             sourceBuffer = mediaSource.addSourceBuffer(
-              `video/mp4; codecs="${initCodec}"`,
+              `video/mp4; codecs="${initialCodec}"`,
             );
-            console.log(TAG, "addSourceBuffer succeeded, codec:", initCodec);
+            console.log(TAG, "addSourceBuffer succeeded, codec:", initialCodec);
           } catch (e) {
-            console.error(TAG, "addSourceBuffer FAILED", initCodec, e);
+            console.error(TAG, "addSourceBuffer FAILED", initialCodec, e);
             opts.onError(
-              `addSourceBuffer failed (codec ${initCodec}): ${
+              `addSourceBuffer failed (codec ${initialCodec}): ${
                 e instanceof Error ? e.message : String(e)
               }`,
             );
@@ -215,7 +215,7 @@ export async function startScreencast(
           try {
             sourceBuffer.appendBuffer(initBuf);
             console.log(TAG, "init appendBuffer called,", initBuf.byteLength, "bytes");
-            opts.onProgress?.("init-sent", initCodec);
+            opts.onProgress?.("init-sent", initialCodec);
           } catch (e) {
             console.error(TAG, "init appendBuffer FAILED", e);
             opts.onError(
@@ -309,7 +309,7 @@ export async function startScreencast(
     try { void proc.kill(); } catch { /* ignore */ }
   };
 
-  muxer = createMuxerInstance();
+  muxer = createMuxerInstance("avc1.42E01E");
 
   // Worker-equivalent "ready" event — let the panel switch to
   // "running" once we know the pipeline is set up (muxer ready,
@@ -398,7 +398,7 @@ export async function startScreencast(
             try {
               muxer?.finalize();
             } catch { /* ignore */ }
-            muxer = createMuxerInstance();
+            muxer = createMuxerInstance(codec);
             configSent = true;
           }
         }

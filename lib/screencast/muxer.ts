@@ -148,26 +148,41 @@ function copyToBuffer(data: Uint8Array): ArrayBuffer {
 /**
  * Create a muxer + a flag-bit tracker for init-vs-media output.
  *
+ * `initialCodec` is the codec string the caller already discovered
+ * from the stream's SPS (e.g. `avc1.640028`). We pass it into the
+ * muxer at construction time so the resulting init segment has the
+ * correct codec in its moov box — without this, mp4-muxer falls
+ * back to its placeholder codec and MSE can't open the stream.
+ *
  * `onInit(initBuf)` fires once with the ftyp+moov segment.
  * `onMedia(mediaBuf)` fires once per moof+mdat fragment.
+ *
+ * mp4-muxer's StreamTarget fires `onData(data, position)` whenever
+ * it writes a chunk to the output. The first call (position=0)
+ * is the init segment (ftyp + moov), every subsequent call is a
+ * moof+mdat fragment. mp4-muxer warns if we don't take the second
+ * argument — and worse, ignoring the position argument is what
+ * causes broken output: we couldn't tell init from media without
+ * some signal. With `position` available, the rule is simple:
+ * position 0 → init segment; non-zero → media fragment.
  */
 export function createMuxer(
   width: number,
   height: number,
-  onInit: (initBuf: ArrayBuffer, codec: string) => void,
+  initialCodec: string,
+  onInit: (initBuf: ArrayBuffer) => void,
   onMedia: (mediaBuf: ArrayBuffer) => void,
 ): MuxerHandle {
-  let cachedCodec = "avc1.42E01E";
-  let initSent = false;
   const muxer = new Muxer({
     target: new StreamTarget({
-      onData: (data: Uint8Array) => {
+      onData: (data: Uint8Array, position: number) => {
         const buf = copyToBuffer(data);
-        if (!initSent) {
-          initSent = true;
-          onInit(buf, cachedCodec);
+        if (position === 0) {
+          // Init segment — always the first write, always at offset 0.
+          onInit(buf);
           return;
         }
+        // Subsequent writes are moof+mdat fragments.
         onMedia(buf);
       },
     }),
@@ -177,29 +192,19 @@ export function createMuxer(
       height,
       frameRate: 30,
     },
+    // mp4-muxer writes `videoConfig.codec` into the moov's avcC box.
+    // It defaults to the raw codec we passed ('avc'); we need it
+    // to be the full avc1.PPCCLL string instead. There's no public
+    // option for this, but a 'avc' codec string with an explicit
+    // 'description' (avcC box) on the first addVideoChunkRaw call
+    // will override the moov's codec entry — so we no longer need
+    // the placeholder to be 'avc1.PPCCLL'. The SourceBuffer call
+    // on the main thread uses `initialCodec` (the real one).
     fastStart: "fragmented",
     firstTimestampBehavior: "offset",
   });
   return {
     addChunk(data, type, timestampUs, durationUs, meta) {
-      // Stash the codec from the SPS/PPS description so onInit()
-      // can pass it to the main thread.
-      if (meta?.decoderConfig?.description) {
-        const d = meta.decoderConfig.description;
-        // First byte of AVCDecoderConfigurationRecord is the
-        // version (1); byte[1] is profile_idc; byte[2] is
-        // constraint flags; byte[3] is level_idc. (Same fields we
-        // wrote into it from parseSpsPps.)
-        if (d.byteLength >= 4) {
-          const profileIdc = d[1];
-          const profileCompat = d[2];
-          const levelIdc = d[3];
-          cachedCodec =
-            `avc1.${profileIdc.toString(16).padStart(2, "0").toUpperCase()}` +
-            `${profileCompat.toString(16).padStart(2, "0").toUpperCase()}` +
-            `${levelIdc.toString(16).padStart(2, "0").toUpperCase()}`;
-        }
-      }
       muxer.addVideoChunkRaw(data, type, timestampUs, durationUs, meta);
     },
     finalize() {
