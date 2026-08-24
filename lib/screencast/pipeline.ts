@@ -166,7 +166,21 @@ export async function startScreencast(
       height: encodedHeight,
       timescale: 30_000,
       onInit: (initBuf) => {
-        console.log(TAG, "init segment received, codec:", initialCodec, "bytes:", initBuf.byteLength, "hex-prefix:", new Uint8Array(initBuf, 0, Math.min(8, initBuf.byteLength)));
+        // Log init segment structure: list every box (name + size) so
+        // when the user reports SourceBuffer error we can see the
+        // exact moov topology the parser is choking on.
+        const boxList = dumpMp4Boxes(new Uint8Array(initBuf));
+        console.log(
+          TAG,
+          "init segment received, codec:",
+          initialCodec,
+          "bytes:",
+          initBuf.byteLength,
+          "hex-prefix:",
+          new Uint8Array(initBuf, 0, Math.min(8, initBuf.byteLength)),
+          "boxes:",
+          boxList,
+        );
         sourceOpenPromise.then(() => {
           if (stopRequested) return;
           try {
@@ -546,4 +560,48 @@ export async function injectInput(
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * Walk an MP4 byte buffer and list every box (name + size) at the
+ * top level. Used to diagnose what MSE's parser sees when the user
+ * reports a SourceBuffer PARSE_ERR — the box list tells us whether
+ * the structure matches the fMP4 spec (ftyp, moov{mvex.trex}) or
+ * something got skipped/wrong-sized.
+ */
+function dumpMp4Boxes(bytes: Uint8Array): string {
+  const out: string[] = [];
+  let off = 0;
+  while (off + 8 <= bytes.length) {
+    const size = (bytes[off] << 24) | (bytes[off + 1] << 16) | (bytes[off + 2] << 8) | bytes[off + 3];
+    const type = String.fromCharCode(bytes[off + 4], bytes[off + 5], bytes[off + 6], bytes[off + 7]);
+    if (size === 0) {
+      // size=0 means "extends to end of file"
+      out.push(`${type}(to-end @${off})`);
+      break;
+    }
+    if (size === 1) {
+      // size=1 means 64-bit largesize at offset 8..15
+      if (off + 16 > bytes.length) {
+        out.push(`${type}(largeSize-truncated @${off})`);
+        break;
+      }
+      const hi = (bytes[off + 8] << 24) | (bytes[off + 9] << 16) | (bytes[off + 10] << 8) | bytes[off + 11];
+      const lo = (bytes[off + 12] << 24) | (bytes[off + 13] << 16) | (bytes[off + 14] << 8) | bytes[off + 15];
+      const large = hi * 0x100000000 + lo;
+      out.push(`${type}(${large} @${off})`);
+      off += large;
+      continue;
+    }
+    if (size < 8 || off + size > bytes.length) {
+      out.push(`${type}(bad-size ${size} @${off})`);
+      break;
+    }
+    out.push(`${type}(${size} @${off})`);
+    off += size;
+  }
+  if (off < bytes.length) {
+    out.push(`<trailing ${bytes.length - off} bytes>`);
+  }
+  return out.join(", ");
 }
