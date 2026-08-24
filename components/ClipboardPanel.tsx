@@ -117,8 +117,11 @@ export function ClipboardPanel({ session }: Props) {
       const text = parseClipboardOutput(out);
       if (text === null) {
         setReadDetail(
-          "Device returned no clipboard text. The ROM may restrict " +
-            "non-system apps from reading the clipboard.",
+          "Device returned no clipboard text.\n\n" +
+            "This is common on devices where the ROM restricts " +
+            "non-system apps from reading the clipboard. Try " +
+            "copying some text on the device first, then click " +
+            "Read again.",
         );
       } else {
         setReadDetail(`Read ${text.length} chars from device.`);
@@ -128,7 +131,12 @@ export function ClipboardPanel({ session }: Props) {
     } catch (e) {
       setReadStatus("error");
       setReadDetail(
-        `Read failed: ${e instanceof Error ? e.message : String(e)}`,
+        `Read from device is not supported on this device.\n\n` +
+            `Your device's ROM doesn't expose the clipboard ` +
+            `service to the shell. This is common on stripped-down ` +
+            `or vendor-customized builds. The Send-to-device path ` +
+            `is also likely to fail on the same device.\n\n` +
+            `Technical details: ${e instanceof Error ? e.message : String(e)}`,
       );
       return null;
     }
@@ -228,15 +236,18 @@ export function ClipboardPanel({ session }: Props) {
         }
 
         throw new Error(
-          `All write strategies failed. Last error: ${lastError}\n\n` +
-            `This device's shell cannot write to the clipboard. The ` +
-            `Android clipboard service is gated behind SELinux + a ` +
-            `complex ClipData Parcel that 'service call' can't construct. ` +
-            `Common on stock AOSP < 9, custom ROMs, and devices where ` +
-            `the OEM stripped the 'cmd clipboard' helper. ` +
-            `Workaround: install a clipboard helper APK with system ` +
-            `signature (e.g. Clipper) — webadb can write to it via ` +
-            `'am broadcast' instead.`,
+          `Your device doesn't support writing the clipboard from ` +
+            `the shell.\n\n` +
+            `This is normal on stripped-down or vendor-customized ` +
+            `ROMs. Android's clipboard service is gated behind ` +
+            `SELinux and a complex ClipData Parcel that 'service ` +
+            `call' can't construct from the command line.\n\n` +
+            `Workaround: install a clipboard helper app such as ` +
+            `Clipper (a copy-paste utility that exposes a broadcast ` +
+            `interface) — webadb could then write to it via 'am ` +
+            `broadcast' instead. That's a follow-up; for now this ` +
+            `device simply can't receive pushes from the browser.\n\n` +
+            `Technical details: ${lastError}`,
         );
       } catch (e) {
         setWriteStatus("error");
