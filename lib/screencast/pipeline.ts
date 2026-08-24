@@ -331,11 +331,20 @@ export async function startScreencast(
       let totalSize: number;
       let contentOffset: number;
       if (size32 === 1) {
-        // 64-bit largesize.
+        // 64-bit largesize. Reading the value into a Number directly
+        // loses precision above 2^53 (mdat for a long recording can
+        // be hundreds of GB on a 30-min screencast). Use BigInt, then
+        // clamp to Number — if the clamp kicks in, the file is bigger
+        // than we'll ever read in one poll anyway.
         if (off + 16 > bytes.length) break;
-        const hi = (bytes[off + 8] << 24) | (bytes[off + 9] << 16) | (bytes[off + 10] << 8) | bytes[off + 11];
-        const lo = (bytes[off + 12] << 24) | (bytes[off + 13] << 16) | (bytes[off + 14] << 8) | bytes[off + 15];
-        totalSize = hi * 0x100000000 + lo;
+        let big: bigint;
+        try {
+          big = new DataView(bytes.buffer, bytes.byteOffset + off + 8, 8).getBigUint64(0, false);
+        } catch {
+          break;
+        }
+        const MAX = BigInt(Number.MAX_SAFE_INTEGER);
+        totalSize = big > MAX ? Number.MAX_SAFE_INTEGER : Number(big);
         contentOffset = off + 16;
       } else if (size32 === 0) {
         // size=0 means "extends to end of file".
@@ -433,11 +442,22 @@ export async function startScreencast(
   // discarded; we just want their mdat content as continuous media
   // samples. Each new file is rm'd at the start of the next, so the
   // poll loop always reads the fresh file from byte 0.
+  //
+  // The first rotation happens after CHUNK_ROTATION_SECONDS (longer
+  // than the recording's --time-limit) to make sure the recording
+  // naturally ends on its own and writes moov before we kill it.
+  const CHUNK_ROTATION_SECONDS = CHUNK_SECONDS + 2;
   setTimeout(() => {
     if (stopRequested) return;
     void (async () => {
+      // Wait until init is sent before starting rotations — we don't
+      // want to interrupt the first recording before moov has been
+      // shipped.
+      while (!stopRequested && !initSegmentSent) {
+        await sleep(200);
+      }
       while (!stopRequested) {
-        await sleep((CHUNK_SECONDS + 0.5) * 1000);
+        await sleep(CHUNK_ROTATION_SECONDS * 1000);
         if (stopRequested) break;
         // Kill the current screenrecord so its moov gets written.
         try { void proc?.kill(); } catch { /* ignore */ }
@@ -490,18 +510,36 @@ export async function startScreencast(
     // gets killed, writes moov. We poll its file as it grows.
     while (!stopRequested) {
       await sleep(POLL_INTERVAL_MS);
+      const readStartOffset = chunkReadOffset;
       const bytes = await readSince(chunkReadOffset);
-      if (!bytes || bytes.byteLength === 0) continue;
+      if (!bytes || bytes.byteLength === 0) {
+        // File empty / not yet created — happens for the first
+        // ~100ms after we rm + spawn. Stay quiet unless we haven't
+        // seen anything in a while.
+        if (pollCount > 0 && pollCount % 16 === 0) {
+          console.log(
+            TAG,
+            "poll",
+            pollCount,
+            "no new bytes; chunkOffset:",
+            chunkReadOffset,
+          );
+        }
+        continue;
+      }
       pollCount++;
       chunkReadOffset += bytes.byteLength;
       lastReadOffset = chunkReadOffset;
-      if (pollCount % 4 === 0) {
+      // Log every poll for the first 20 then every 4th.
+      if (pollCount <= 20 || pollCount % 4 === 0) {
         console.log(
           TAG,
           "poll",
           pollCount,
           "bytes:",
           bytes.byteLength,
+          "fromOffset:",
+          readStartOffset,
           "chunkOffset:",
           chunkReadOffset,
           "hex-prefix:",
