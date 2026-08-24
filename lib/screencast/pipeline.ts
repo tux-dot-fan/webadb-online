@@ -256,24 +256,42 @@ export async function startScreencast(
   };
 
   // ── 3. Poll the device file and feed MSE ─────────────────────────────────
-  // We use tail -c +N to read bytes from offset N to EOF. tail is
-  // a one-shot (not -f) so it terminates after EOF — which is what
-  // we want, because the file is constantly growing and we want
-  // each poll to return just the new bytes.
+  // We poll file size via `wc -c` and read new bytes via `dd skip=N`.
+  // Both are one-shot commands that return immediately — unlike
+  // `tail -c +N`, which would wait forever for EOF on a file that
+  // screenrecord keeps growing.
   //
   // `readSince(startOffset)` returns the bytes [startOffset, EOF] of
   // the device-side file. Each chunk has its own startOffset=0
   // (because we rm the file at the start of each new recording),
   // so the call site advances the offset locally.
-  const readSince = async (startOffset: number): Promise<Uint8Array | null> => {
+  // `wc -c <file>` returns text. Use the ya-webadb short-text idiom:
+  // shell.spawn().wait().toString() returns a WaitResult<string>.
+  // See lib/adb-client.ts spawnText for the canonical wrapper.
+  const wcSize = async (): Promise<number | null> => {
     try {
-      const tail = await shell.spawn([
-        "tail",
-        "-c",
-        `+${startOffset + 1}`,
-        STREAM_PATH,
+      const result = await shell.spawn(["wc", "-c", STREAM_PATH]).wait().toString();
+      const m = result.stdout.match(/(\d+)/);
+      if (!m) return null;
+      return parseInt(m[1], 10);
+    } catch {
+      return null;
+    }
+  };
+
+  const readBytes = async (
+    offset: number,
+    length: number,
+  ): Promise<Uint8Array | null> => {
+    try {
+      const dd = await shell.spawn([
+        "dd",
+        `if=${STREAM_PATH}`,
+        `bs=1`,
+        `skip=${offset}`,
+        `count=${length}`,
       ]);
-      const reader = (tail.stdout as unknown as ReadableStream<Uint8Array>).getReader();
+      const reader = (dd.stdout as unknown as ReadableStream<Uint8Array>).getReader();
       const chunks: Uint8Array[] = [];
       let total = 0;
       try {
@@ -286,10 +304,10 @@ export async function startScreencast(
         }
       } finally {
         reader.releaseLock();
-        try { void tail.kill(); } catch { /* ignore */ }
+        try { void dd.kill(); } catch { /* ignore */ }
       }
       if (total === 0) return null;
-      const safeTotal = Math.min(Math.max(0, total), 256 * 1024 * 1024); // cap at 256MB safety
+      const safeTotal = Math.min(Math.max(0, total), 256 * 1024 * 1024);
       const merged = new Uint8Array(safeTotal);
       let off = 0;
       for (const c of chunks) {
@@ -298,9 +316,18 @@ export async function startScreencast(
       }
       return merged;
     } catch (e) {
-      console.warn(TAG, "poll failed:", e);
       return null;
     }
+  };
+
+  const readSince = async (startOffset: number): Promise<Uint8Array | null> => {
+    const size = await wcSize();
+    if (size === null) return null;
+    if (size <= startOffset) return null; // file doesn't have new bytes yet
+    // Read [startOffset, size). Cap to ~8MB per poll to avoid huge
+    // shell transfers if we fall way behind.
+    const want = Math.min(size - startOffset, 8 * 1024 * 1024);
+    return await readBytes(startOffset, want);
   };
 
   // Walk top-level boxes in an mp4 buffer. Returns the byte ranges
