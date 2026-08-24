@@ -55,6 +55,7 @@ const PROGRESS_LABELS: Record<ProgressKind, string> = {
   "first-chunk": "Receiving H.264 bytes",
   "config-parsed": "Parsed codec config",
   "init-sent": "Init segment appended to decoder",
+  "init": "Init segment appended to decoder",
   "first-frame": "First frame decoded",
   playing: "Playing",
 };

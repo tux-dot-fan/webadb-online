@@ -82,6 +82,7 @@ export type ProgressKind =
   | "first-chunk"     // first H.264 chunk landed in the worker
   | "config-parsed"   // SPS/PPS extracted, codec known
   | "init-sent"       // ftyp+moov appended to SourceBuffer
+  | "init"            // (alias for init-sent, used by file-mode pipeline)
   | "first-frame"     // first moof+mdat appended
   | "playing";        // video.play() resolved (first frame on screen)
 
