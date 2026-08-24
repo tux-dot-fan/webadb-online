@@ -260,12 +260,17 @@ export async function startScreencast(
   // a one-shot (not -f) so it terminates after EOF — which is what
   // we want, because the file is constantly growing and we want
   // each poll to return just the new bytes.
-  const pollOnce = async (): Promise<Uint8Array | null> => {
+  //
+  // `readSince(startOffset)` returns the bytes [startOffset, EOF] of
+  // the device-side file. Each chunk has its own startOffset=0
+  // (because we rm the file at the start of each new recording),
+  // so the call site advances the offset locally.
+  const readSince = async (startOffset: number): Promise<Uint8Array | null> => {
     try {
       const tail = await shell.spawn([
         "tail",
         "-c",
-        `+${lastReadOffset + 1}`,
+        `+${startOffset + 1}`,
         STREAM_PATH,
       ]);
       const reader = (tail.stdout as unknown as ReadableStream<Uint8Array>).getReader();
@@ -283,7 +288,9 @@ export async function startScreencast(
         reader.releaseLock();
         try { void tail.kill(); } catch { /* ignore */ }
       }
-      const merged = new Uint8Array(total);
+      if (total === 0) return null;
+      const safeTotal = Math.min(Math.max(0, total), 256 * 1024 * 1024); // cap at 256MB safety
+      const merged = new Uint8Array(safeTotal);
       let off = 0;
       for (const c of chunks) {
         merged.set(c, off);
@@ -341,11 +348,12 @@ export async function startScreencast(
         contentOffset = off + 8;
       }
       if (type === "ftyp" || type === "moov" || type === "mdat") {
+        const contentLength = Math.max(0, totalSize - (contentOffset - off));
         boxes.push({
           type,
           headerOffset: off,
           contentOffset,
-          contentLength: totalSize - (contentOffset - off),
+          contentLength,
         });
       }
       if (off + totalSize > bytes.length) break;
@@ -435,21 +443,31 @@ export async function startScreencast(
         try { void proc?.kill(); } catch { /* ignore */ }
         // Brief pause so the device flushes the moov.
         await sleep(500);
+        // Reset chunkReadOffset so the poll loop reads the new file
+        // from byte 0.
+        chunkReadOffset = 0;
         // Start a new chunk.
         await startOneRecording();
       }
     })();
   }, 0);
 
+  // chunkReadOffset tracks where we left off reading in the current
+  // chunk's file. It starts at 0 (chunk is rm'd before recording
+  // starts), advances by the bytes returned from each successful
+  // readSince() call. Reset to 0 at the start of every new chunk.
+  let chunkReadOffset = 0;
+
   (async () => {
     // First chunk: wait for moov before doing anything (moov is the
     // only place we get SPS/PPS from).
     while (!stopRequested && !initSegmentSent) {
       await sleep(POLL_INTERVAL_MS);
-      const bytes = await pollOnce();
+      const bytes = await readSince(chunkReadOffset);
       if (!bytes || bytes.byteLength === 0) continue;
       pollCount++;
-      lastReadOffset = bytes.byteLength;
+      chunkReadOffset += bytes.byteLength;
+      lastReadOffset = chunkReadOffset;
       if (pollCount === 1) {
         console.log(
           TAG,
@@ -463,8 +481,8 @@ export async function startScreencast(
       if (initSegmentSent) {
         // Done with first chunk. Kick off the next one so the
         // recording loop continues.
+        chunkReadOffset = 0; // will be reset by the rotation logic
         lastChunkEndTime = Date.now();
-        void startOneRecording();
       }
     }
 
@@ -472,16 +490,11 @@ export async function startScreencast(
     // gets killed, writes moov. We poll its file as it grows.
     while (!stopRequested) {
       await sleep(POLL_INTERVAL_MS);
-      const bytes = await pollOnce();
+      const bytes = await readSince(chunkReadOffset);
       if (!bytes || bytes.byteLength === 0) continue;
       pollCount++;
-      // We DON'T bump lastReadOffset for full re-reads. The bytes
-      // here are the *new* file (we rm'd the previous one before
-      // starting the new chunk), so the entire current chunk is
-      // "new bytes". This is fine because we use a fresh rm at the
-      // start of each recording — lastReadOffset just tracks the
-      // current chunk's size.
-      lastReadOffset = bytes.byteLength;
+      chunkReadOffset += bytes.byteLength;
+      lastReadOffset = chunkReadOffset;
       if (pollCount % 4 === 0) {
         console.log(
           TAG,
@@ -489,6 +502,8 @@ export async function startScreencast(
           pollCount,
           "bytes:",
           bytes.byteLength,
+          "chunkOffset:",
+          chunkReadOffset,
           "hex-prefix:",
           bytes.subarray(0, Math.min(8, bytes.byteLength)),
         );
@@ -540,10 +555,12 @@ export async function startScreencast(
       // can't send anything to MSE yet (no SPS/PPS to put in the
       // init segment), but we don't want to lose these bytes either.
       if (!moov) {
-        if (mdat.contentLength > 0) {
+        const available = Math.max(0, bytes.length - mdat.contentOffset);
+        const safeLength = Math.min(mdat.contentLength, available);
+        if (safeLength > 0) {
           // Copy because the input buffer can be reused by ReadableStream.
-          const copy = new Uint8Array(mdat.contentLength);
-          copy.set(bytes.subarray(mdat.contentOffset, mdat.contentOffset + mdat.contentLength));
+          const copy = new Uint8Array(safeLength);
+          copy.set(bytes.subarray(mdat.contentOffset, mdat.contentOffset + safeLength));
           pendingMdat.push(copy);
           pendingMdatTotal += copy.byteLength;
         }
@@ -577,18 +594,25 @@ export async function startScreencast(
       // Combine mdat content from this poll with previously-buffered
       // mdat content. Send everything as one big first-frame chunk so
       // MSE has the full IDR + a few P-slices for the first paint.
-      const totalMdatBytes =
-        pendingMdatTotal + Math.max(0, mdat.contentLength);
+      const available = Math.max(0, bytes.length - mdat.contentOffset);
+      const safeContentLength = Math.max(0, Math.min(mdat.contentLength, available));
+      const safePendingTotal = Math.max(0, pendingMdatTotal);
+      const totalMdatBytes = safePendingTotal + safeContentLength;
+      if (totalMdatBytes <= 0) {
+        // Nothing to send — just initialize SourceBuffer and stop.
+        pendingMdat = [];
+        pendingMdatTotal = 0;
+        return;
+      }
       const firstMdat = new Uint8Array(totalMdatBytes);
       let pos = 0;
       for (const buf of pendingMdat) {
         firstMdat.set(buf, pos);
         pos += buf.byteLength;
       }
-      const remainingFromThisPoll = Math.max(0, mdat.contentLength);
-      if (remainingFromThisPoll > 0) {
+      if (safeContentLength > 0) {
         firstMdat.set(
-          bytes.subarray(mdat.contentOffset, mdat.contentOffset + remainingFromThisPoll),
+          bytes.subarray(mdat.contentOffset, mdat.contentOffset + safeContentLength),
           pos,
         );
       }
@@ -685,10 +709,12 @@ export async function startScreencast(
       });
     } else {
       // init already sent — subsequent polls are pure mdat content.
-      if (mdat.contentLength <= 0) return;
-      const m = new ArrayBuffer(mdat.contentLength);
+      const available = Math.max(0, bytes.length - mdat.contentOffset);
+      const safeLength = Math.max(0, Math.min(mdat.contentLength, available));
+      if (safeLength <= 0) return;
+      const m = new ArrayBuffer(safeLength);
       new Uint8Array(m).set(
-        bytes.subarray(mdat.contentOffset, mdat.contentOffset + mdat.contentLength),
+        bytes.subarray(mdat.contentOffset, mdat.contentOffset + safeLength),
       );
       appendBuffer(m);
     }
