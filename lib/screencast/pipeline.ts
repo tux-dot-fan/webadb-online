@@ -184,9 +184,37 @@ export async function startScreencast(
             return;
           }
           sourceBuffer.addEventListener("error", (ev) => {
-            console.error(TAG, "SourceBuffer error event", ev);
+            // MSE's SourceBuffer error events are nearly useless —
+            // `ev` is an empty Event with no detail. The actual
+            // diagnostic is sourceBuffer.code, a string constant
+            // that tells us what the parser rejected:
+            //   "BUFFER_FULL"           — appendBuffer while another
+            //                              append was in flight
+            //   "INVALID_STATE_ERR"     — appendBuffer at wrong state
+            //   "QUOTA_EXCEEDED_ERR"    — buffered data exceeds limit
+            //   "PARSE_ERR"             — the bytes themselves failed
+            //                              to parse (this is what we
+            //                              keep hitting; an fMP4 box
+            //                              structure problem)
+            const code =
+              (sourceBuffer as unknown as { code?: string })?.code ?? "unknown";
+            const bufferedRanges =
+              sourceBuffer && sourceBuffer.buffered.length > 0
+                ? `${sourceBuffer.buffered.start(0).toFixed(2)} - ${sourceBuffer.buffered.end(sourceBuffer.buffered.length - 1).toFixed(2)}`
+                : "(empty)";
+            console.error(
+              TAG,
+              "SourceBuffer error event — code:",
+              code,
+              "updating:",
+              sourceBuffer?.updating,
+              "buffered:",
+              bufferedRanges,
+              "ev:",
+              ev,
+            );
             opts.onError(
-              `SourceBuffer error (updating=${sourceBuffer?.updating})`,
+              `SourceBuffer error: code=${code}, updating=${sourceBuffer?.updating}, buffered=${bufferedRanges}`,
             );
           });
           sourceBuffer.addEventListener("updateend", () => {
