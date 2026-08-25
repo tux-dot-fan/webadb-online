@@ -265,16 +265,26 @@ export async function startScreencast(
   // the device-side file. Each chunk has its own startOffset=0
   // (because we rm the file at the start of each new recording),
   // so the call site advances the offset locally.
-  // `wc -c <file>` returns text. Use the ya-webadb short-text idiom:
-  // shell.spawn().wait().toString() returns a WaitResult<string>.
-  // See lib/adb-client.ts spawnText for the canonical wrapper.
+  // `stat -c %s <file>` returns just the file size as a single number.
+// Unlike `wc -c` it doesn't need to read EOF — stat() is a syscall
+// that returns metadata immediately, even for files that are
+// actively being written. This is critical for our use case:
+// screenrecord keeps the file open and growing, so `wc -c` would
+// block forever waiting for EOF.
   const wcSize = async (): Promise<number | null> => {
+    const start = Date.now();
     try {
-      const result = await shell.spawn(["wc", "-c", STREAM_PATH]).wait().toString();
+      console.log(TAG, "wcSize: spawning stat -c %s", STREAM_PATH);
+      const result = await shell.spawn(["stat", "-c", "%s", STREAM_PATH]).wait().toString();
+      console.log(TAG, "wcSize: result in", Date.now() - start, "ms:", JSON.stringify(result).slice(0,200));
       const m = result.stdout.match(/(\d+)/);
-      if (!m) return null;
+      if (!m) {
+        console.log(TAG, "wcSize: no digits in stdout, stderr:", JSON.stringify(result.stderr).slice(0,200));
+        return null;
+      }
       return parseInt(m[1], 10);
-    } catch {
+    } catch (e) {
+      console.warn(TAG, "wcSize: threw", e instanceof Error ? e.message : String(e));
       return null;
     }
   };
@@ -283,15 +293,17 @@ export async function startScreencast(
     offset: number,
     length: number,
   ): Promise<Uint8Array | null> => {
+    const start = Date.now();
     try {
-      const dd = await shell.spawn([
+      console.log(TAG, "readBytes: spawning dd", { offset, length });
+      const proc = (await shell.spawn([
         "dd",
         `if=${STREAM_PATH}`,
         `bs=1`,
         `skip=${offset}`,
         `count=${length}`,
-      ]);
-      const reader = (dd.stdout as unknown as ReadableStream<Uint8Array>).getReader();
+      ])) as unknown as { stdout: ReadableStream<Uint8Array>; kill: () => Promise<void> };
+      const reader = (proc.stdout as unknown as ReadableStream<Uint8Array>).getReader();
       const chunks: Uint8Array[] = [];
       let total = 0;
       try {
@@ -304,8 +316,9 @@ export async function startScreencast(
         }
       } finally {
         reader.releaseLock();
-        try { void dd.kill(); } catch { /* ignore */ }
+        try { void proc.kill(); } catch { /* ignore */ }
       }
+      console.log(TAG, "readBytes: got", total, "bytes in", Date.now() - start, "ms");
       if (total === 0) return null;
       const safeTotal = Math.min(Math.max(0, total), 256 * 1024 * 1024);
       const merged = new Uint8Array(safeTotal);
@@ -316,18 +329,28 @@ export async function startScreencast(
       }
       return merged;
     } catch (e) {
+      console.warn(TAG, "readBytes: threw", e instanceof Error ? e.message : String(e));
       return null;
     }
   };
 
   const readSince = async (startOffset: number): Promise<Uint8Array | null> => {
+    const start = Date.now();
+    console.log(TAG, "readSince: polling", { startOffset });
     const size = await wcSize();
-    if (size === null) return null;
-    if (size <= startOffset) return null; // file doesn't have new bytes yet
-    // Read [startOffset, size). Cap to ~8MB per poll to avoid huge
-    // shell transfers if we fall way behind.
+    if (size === null) {
+      console.log(TAG, "readSince: wcSize null in", Date.now() - start, "ms");
+      return null;
+    }
+    if (size <= startOffset) {
+      console.log(TAG, "readSince: no new bytes", { size, startOffset });
+      return null;
+    }
     const want = Math.min(size - startOffset, 8 * 1024 * 1024);
-    return await readBytes(startOffset, want);
+    const bytes = await readBytes(startOffset, want);
+    if (!bytes) return null;
+    console.log(TAG, "readSince: got", bytes.byteLength, "bytes from offset", startOffset, "of total", size, "in", Date.now() - start, "ms");
+    return bytes;
   };
 
   // Walk top-level boxes in an mp4 buffer. Returns the byte ranges
