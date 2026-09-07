@@ -95,6 +95,8 @@ const DEFAULT_COMMANDS: SavedCommand[] = [
   { id: "c-uptime",     label: "Uptime",               command: "uptime" },
   { id: "c-battery",    label: "Battery",              command: "dumpsys battery | head -n 30" },
   { id: "c-wm",         label: "Window state",         command: "dumpsys window | head -n 40" },
+  { id: "c-thermal",       label: "Sensor temperatures",  command: "dumpsys thermalservice | head -n 60" },
+  { id: "c-thermal-raw",   label: "Thermal zones (raw mC)", command: "for z in /sys/class/thermal/thermal_zone*; do n=$(basename \"$z\"); t=$(cat \"$z/temp\" 2>/dev/null); echo \"$n $t mC\"; done" },
   { id: "c-top",        label: "Top (3 ticks)",        command: "top -b -n 3 -d 1 | tail -n 20" },
   { id: "c-env",        label: "Env (PATH)",           command: "echo \"PATH=$PATH\"" },
   { id: "c-getprop",    label: "Device props",         command: "getprop ro.product.model ro.build.version.release ro.product.cpu.abi" },
