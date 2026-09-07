@@ -635,7 +635,7 @@ export function Workspace({ buildVersion, buildGitHash, buildTimestamp }: Worksp
             page. The `isLandingMode` derivation already factors in
             `session === null`, so we just reuse it. */}
         {isLandingMode && (
-          <LandingHero />
+          <LandingHero onLaunchApp={openWindow} />
         )}
 
         <div className="windows-layer">

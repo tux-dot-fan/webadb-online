@@ -588,6 +588,126 @@ pre {
   padding: 6px 18px;
 }
 
+/* ── Generic modal (used by WifiSetupModal on the landing page) ──────── */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.36);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 220;
+  animation: about-fade-in 0.14s ease-out;
+  padding: 24px;
+}
+.modal-window {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 18px 56px rgba(0, 0, 0, 0.34);
+  max-width: 620px;
+  width: 100%;
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.modal-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  user-select: none;
+}
+.modal-title-icon {
+  font-size: 18px;
+}
+.modal-title {
+  font-size: 14px;
+  font-weight: 600;
+  flex: 1;
+}
+.modal-close {
+  margin-left: 0;
+}
+.modal-body {
+  padding: 18px 22px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text);
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.modal-foot button {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+}
+.modal-foot button.primary {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+.modal-foot button.ghost {
+  background: transparent;
+}
+.modal-foot button:hover {
+  filter: brightness(1.06);
+}
+
+/* ── Wi-Fi setup modal (landing-page-specific content) ────────────────── */
+.wifi-setup-modal {
+  max-width: 640px;
+}
+.wifi-modal-lede {
+  margin: 0 0 14px;
+  color: var(--text-dim);
+}
+.wifi-modal-steps {
+  margin: 0 0 14px;
+  padding-left: 22px;
+}
+.wifi-modal-steps li {
+  margin-bottom: 10px;
+}
+.wifi-modal-step-detail {
+  display: block;
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.wifi-modal-step-detail code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11.5px;
+}
+.wifi-modal-footnote {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border));
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
 /* ── Connect callout (big button on the landing page) ──────────────────── */
 .connect-callout {
   display: flex;
@@ -681,6 +801,22 @@ pre {
   margin: 0;
   color: var(--text-dim);
   font-size: 13px;
+  line-height: 1.45;
+}
+.connect-callout-wifi-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.12s ease-out, border-color 0.12s ease-out;
+}
+.connect-callout-wifi-btn:hover {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev));
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
 }
 .ghost-danger {
   background: transparent;
