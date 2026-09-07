@@ -110,13 +110,9 @@ export function LandingHero({ onLaunchApp }: LandingHeroProps = {}) {
         server.
       </p>
 
-      <WifiSetupModal
+      <WifiConnectModal
         open={wifiModalOpen}
         onClose={() => setWifiModalOpen(false)}
-        onOpenPanel={() => {
-          setWifiModalOpen(false);
-          onLaunchApp?.("wifi");
-        }}
       />
     </section>
   );
@@ -237,37 +233,65 @@ function BusyLabel({
   return <>Working…</>;
 }
 
-// ── WifiSetupModal ───────────────────────────────────────────────────────
+// ── WifiConnectModal ────────────────────────────────────────────────────
 //
-// Step-by-step instructions for getting wireless ADB working. WebADB
-// itself only talks to devices over WebUSB (a USB cable is required
-// for the initial trust handshake), so the modal explains the only
-// path that actually works today: plug in once via USB, grant the RSA
-// fingerprint, enable Wireless Debugging on the phone, then use the
-// Wi-Fi ADB panel to read back the device's IP + port.
+// Connect to a phone that is already listening for ADB over TCP. Uses
+// the Chrome Direct Sockets API (navigator.openTCPSocket) to open a raw
+// socket from the browser — no native bridge, no server.
 //
-// Once the user has the IP + port, they can either:
-//   • keep the USB cable plugged in and use webadb normally (current
-//     recommendation), or
-//   • disconnect USB and use `adb connect <ip>:<port>` from the host
-//     (this only re-routes the host-side adb daemon; webadb will not
-//     connect over the network).
+// One-time setup on the phone (only required the very first time):
+//   1. Enable USB debugging (Developer options).
+//   2. Plug into USB once, accept the RSA fingerprint on the phone.
+//   3. Enable Wireless debugging (Developer options) on the phone.
+//
+// After step 3 the phone listens on TCP 5555 by default and the user
+// enters the device's IP + port in the form below. From then on
+// webadb connects without needing the cable.
+//
+// Requirements:
+//   - Chrome 142+
+//   - Direct Sockets flag enabled:
+//     chrome://flags/#enable-experimental-web-platform-features
+//     (or the Direct Sockets Origin Trial token, or enterprise policy)
+//   - The page must already be cross-origin isolated (webadb.online is)
 
-interface WifiSetupModalProps {
+interface WifiConnectModalProps {
   open: boolean;
   onClose: () => void;
-  onOpenPanel: () => void;
 }
 
-function WifiSetupModal({ open, onClose, onOpenPanel }: WifiSetupModalProps) {
+function WifiConnectModal({ open, onClose }: WifiConnectModalProps) {
+  const [host, setHost] = useState("");
+  const [port, setPort] = useState(5555);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const supported =
+    typeof navigator !== "undefined" &&
+    typeof navigator.openTCPSocket === "function";
+
   if (!open) return null;
+
+  async function handleConnect() {
+    setBusy(true);
+    setError(null);
+    try {
+      const { getAdbClient } = await import("@/lib/adb-client");
+      await getAdbClient().connectOverTcp(host.trim(), port);
+      // On success the AppState transitions to connected and the
+      // landing page unmounts — no need to close the modal here.
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  }
+
   return (
     <div
       className="modal-backdrop"
       role="dialog"
       aria-modal="true"
       aria-labelledby="wifi-modal-title"
-      onClick={onClose}
+      onClick={busy ? undefined : onClose}
     >
       <div
         className="modal-window wifi-setup-modal"
@@ -282,92 +306,114 @@ function WifiSetupModal({ open, onClose, onOpenPanel }: WifiSetupModalProps) {
             type="button"
             className="window-ctrl window-ctrl-close modal-close"
             onClick={onClose}
+            disabled={busy}
             aria-label="Close"
           />
         </div>
 
         <div className="modal-body">
           <p className="wifi-modal-lede">
-            WebADB speaks to your phone over a USB cable (WebUSB). To use
-            it without a cable you'll need to do a one-time setup on the
-            phone itself. Once enabled, the Wi-Fi ADB panel will show the
-            device's IP address and port for reference.
+            Enter the device's IP address and port. The phone must
+            already be listening for ADB over TCP — see the
+            prerequisites below.
           </p>
 
-          <ol className="wifi-modal-steps">
-            <li>
-              <strong>Enable USB debugging</strong> on your phone.
-              <br />
-              <span className="wifi-modal-step-detail">
-                Settings → <em>Developer options</em> → <em>USB
-                debugging</em>. (If Developer options is hidden, tap
-                <em> Build number</em> seven times.)
-              </span>
-            </li>
-            <li>
-              <strong>Plug into USB once</strong> and tap the big
-              <em> Connect device</em> button at the top of this page.
-              <br />
-              <span className="wifi-modal-step-detail">
-                Approve the RSA fingerprint dialog on the phone. Tick
-                <em> Always allow from this computer</em> so you don't
-                have to confirm every time.
-              </span>
-            </li>
-            <li>
-              <strong>Enable Wireless debugging</strong> on the phone.
-              <br />
-              <span className="wifi-modal-step-detail">
-                Same Developer options screen → <em>Wireless
-                debugging</em>. On Xiaomi / HyperOS the toggle is named
-                <em> Wireless debugging</em> under
-                <em> Debugging</em>. Toggle it on; the phone will show
-                an IP address and a port (usually <code>5555</code>) —
-                note them down.
-              </span>
-            </li>
-            <li>
-              <strong>Open the Wi-Fi ADB panel</strong> from the dock
-              (📶 icon) or click the button below.
-              <br />
-              <span className="wifi-modal-step-detail">
-                The panel reads back the phone's current IP and active
-                port, so you can confirm the setup worked. From this
-                point on you can unplug the cable if you like — but note
-                that webadb's WebUSB transport still needs the cable to
-                be plugged in to keep the session alive. The IP and
-                port are most useful as a reference for the host-side
-                <code>adb</code> command, e.g.
-                <code>adb connect &lt;ip&gt;:&lt;port&gt;</code>.
-              </span>
-            </li>
-          </ol>
+          {!supported && (
+            <div className="banner warn" style={{ marginBottom: 12 }}>
+              Direct Sockets is not available in this browser. To use
+              ADB over Wi-Fi you need Chrome 142+ with the
+              {" "}
+              <code>
+                chrome://flags/#enable-experimental-web-platform-features
+              </code>
+              {" "}
+              flag enabled.
+            </div>
+          )}
 
-          <div className="wifi-modal-footnote">
-            <strong>Heads-up:</strong> webadb's WebUSB transport can't
-            open a fresh connection over the network by itself — the
-            initial handshake always requires USB. The Wi-Fi ADB panel
-            is therefore a <em>read-back / verification</em> tool
-            rather than a true wireless entry point. Full wireless
-            support is on the roadmap.
-          </div>
-        </div>
+          <form
+            className="wifi-modal-form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (supported && host.trim() && !busy) void handleConnect();
+            }}
+          >
+            <label className="wifi-modal-field">
+              <span>IP address</span>
+              <input
+                type="text"
+                inputMode="decimal"
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="192.168.1.42"
+                value={host}
+                onChange={(e) => setHost(e.target.value)}
+                disabled={!supported || busy}
+                required
+              />
+            </label>
+            <label className="wifi-modal-field wifi-modal-field-port">
+              <span>Port</span>
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={port}
+                onChange={(e) =>
+                  setPort(Number.parseInt(e.target.value, 10) || 5555)
+                }
+                disabled={!supported || busy}
+                required
+              />
+            </label>
+            <button
+              type="submit"
+              className="primary wifi-modal-connect-btn"
+              disabled={!supported || !host.trim() || busy}
+            >
+              {busy ? "Connecting…" : "Connect"}
+            </button>
+          </form>
 
-        <div className="modal-foot">
-          <button
-            type="button"
-            className="ghost"
-            onClick={onClose}
-          >
-            Close
-          </button>
-          <button
-            type="button"
-            className="primary"
-            onClick={onOpenPanel}
-          >
-            Got it — open Wi-Fi ADB panel
-          </button>
+          {error && (
+            <div className="banner error" style={{ marginTop: 12 }}>
+              <span>{error}</span>
+              <button
+                type="button"
+                className="banner-dismiss"
+                onClick={() => setError(null)}
+                aria-label="Dismiss error"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          <details className="wifi-modal-prereqs">
+            <summary>Prerequisites on the phone</summary>
+            <ol>
+              <li>
+                Enable <strong>USB debugging</strong> in Developer
+                options.
+              </li>
+              <li>
+                Plug into USB <strong>once</strong>, accept the RSA
+                fingerprint on the phone, and tick{" "}
+                <em>Always allow from this computer</em>.
+              </li>
+              <li>
+                Enable <strong>Wireless debugging</strong> in Developer
+                options (Xiaomi / HyperOS: under{" "}
+                <em>Debugging</em>). The phone will display its IP
+                address and a port — usually <code>5555</code>.
+              </li>
+              <li>
+                Unplug the USB cable. The phone keeps listening on
+                the wireless-debug port until you toggle it off or
+                reboot.
+              </li>
+            </ol>
+          </details>
         </div>
       </div>
     </div>

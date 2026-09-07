@@ -13,7 +13,7 @@
  *   4. new Adb(transport) → high-level API
  */
 
-import { Adb, adbDaemonAuthenticate } from "@yume-chan/adb";
+import { Adb, adbDaemonAuthenticate, AdbDaemonTransport } from "@yume-chan/adb";
 import {
   AdbDaemonWebUsbDevice,
   AdbDaemonWebUsbDeviceManager,
@@ -24,6 +24,10 @@ import {
   AdbWebCryptoCredentialManager,
   TangoLocalStorage,
 } from "@yume-chan/adb-credential-web";
+import {
+  connectOverTcp,
+  isDirectSocketsSupported,
+} from "@/lib/adb-daemon-tcp";
 
 export type ConnectionState =
   | { kind: "disconnected" }
@@ -34,7 +38,10 @@ export type ConnectionState =
 
 export interface AdbSession {
   readonly adb: Adb;
-  readonly device: AdbDaemonWebUsbDevice;
+  /** USB device — null when the session is over TCP. */
+  readonly device: AdbDaemonWebUsbDevice | null;
+  /** Underlying daemon transport (for diagnostics / disconnect). */
+  readonly transport?: AdbDaemonTransport;
   readonly disconnected: Promise<void>;
 }
 
@@ -188,6 +195,60 @@ export class AdbClient {
     }
   }
 
+  /**
+   * Connect to a device that is listening for ADB over TCP (typically
+   * after `adb tcpip 5555` or after toggling Wireless debugging in
+   * Developer options). Uses the Chrome Direct Sockets API to open a
+   * raw TCP socket from the browser — no native bridge or server.
+   *
+   * IMPORTANT: This only works after the device has already been
+   * paired via USB at least once (so the RSA fingerprint is trusted).
+   * The Direct Sockets approach cannot trigger the device's first-time
+   * authorization dialog, because that flow only happens on USB.
+   *
+   * The caller passes the device's IP (and optional port; defaults to
+   * 5555). The browser must have Chrome 142+ with Direct Sockets
+   * enabled (origin trial or flag) AND cross-origin isolation on. See
+   * lib/adb-daemon-tcp.ts for the full requirements.
+   */
+  async connectOverTcp(host: string, port: number): Promise<void> {
+    if (this.session) return;
+    if (!isDirectSocketsSupported()) {
+      throw new Error(
+        "Direct Sockets is not available in this browser. Open this page in Chrome 142+ with the Direct Sockets flag enabled, or fall back to a USB connection.",
+      );
+    }
+    this.setState({ kind: "connecting", deviceLabel: `${host}:${port}` });
+    try {
+      const connection = await connectOverTcp(host, port);
+      const transport = await adbDaemonAuthenticate({
+        // No USB serial for TCP — we get it from the banner instead.
+        serial: `${host}:${port}`,
+        connection,
+        credentialManager: CREDENTIAL_MANAGER,
+      });
+      const adb = new Adb(transport);
+      const session: AdbSession = {
+        adb,
+        device: null,
+        transport,
+        disconnected: this.watchTcpDisconnect(transport, connection),
+      };
+      this.session = session;
+      this.setState({
+        kind: "connected",
+        serial: adb.serial,
+        banner: `${adb.banner.product} ${adb.banner.model} (${adb.banner.device}) — over TCP ${host}:${port}`,
+      });
+    } catch (err) {
+      this.session = null;
+      const msg = err instanceof Error ? err.message : String(err);
+      this.setState({ kind: "disconnected" });
+      throw new Error(msg);
+    }
+  }
+
+  /** Disconnect from the current session (USB or TCP). */
   async disconnect(): Promise<void> {
     const s = this.session;
     if (!s) return;
@@ -964,6 +1025,27 @@ export class AdbClient {
       throw new Error("Not connected to a device");
     }
     return this.session;
+  }
+
+  /**
+   * Watch for transport-level disconnection when the session is over
+   * TCP instead of USB. Just forwards the transport's own disconnected
+   * promise — there's no USB device to listen for.
+   */
+  private watchTcpDisconnect(
+    transport: AdbDaemonTransport,
+    connection: { close: () => Promise<void> },
+  ): Promise<void> {
+    return new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        connection.close().catch(() => {});
+        resolve();
+      };
+      transport.disconnected.then(finish).catch(finish);
+    });
   }
 
   private watchDisconnect(

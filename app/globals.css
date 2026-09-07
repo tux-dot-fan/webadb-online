@@ -676,6 +676,98 @@ pre {
   margin: 0 0 14px;
   color: var(--text-dim);
 }
+.wifi-modal-form {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.wifi-modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 180px;
+}
+.wifi-modal-field > span {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+.wifi-modal-field input {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 14px;
+}
+.wifi-modal-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.wifi-modal-field input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.wifi-modal-field-port {
+  flex: 0 0 110px;
+}
+.wifi-modal-connect-btn {
+  padding: 8px 20px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  align-self: flex-end;
+}
+.wifi-modal-connect-btn:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+.wifi-modal-connect-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.wifi-modal-prereqs {
+  margin-top: 16px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.wifi-modal-prereqs summary {
+  cursor: pointer;
+  font-weight: 500;
+  color: var(--text);
+  user-select: none;
+}
+.wifi-modal-prereqs ol {
+  margin: 10px 0 0;
+  padding-left: 22px;
+  line-height: 1.55;
+}
+.wifi-modal-prereqs li {
+  margin-bottom: 6px;
+}
+.wifi-modal-prereqs code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
 .wifi-modal-steps {
   margin: 0 0 14px;
   padding-left: 22px;

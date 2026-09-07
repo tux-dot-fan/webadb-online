@@ -85,7 +85,6 @@ import { SystemMonitorPanel } from "@/components/SystemMonitorPanel";
 import { LogcatPanel }       from "@/components/LogcatPanel";
 import { ScreenshotPanel }   from "@/components/ScreenshotPanel";
 import { ApkInstallPanel }   from "@/components/ApkInstallPanel";
-import { WiFiAdbPanel }      from "@/components/WiFiAdbPanel";
 import { SettingsApp }       from "@/components/SettingsApp";
 import { LauncherApp }       from "@/components/LauncherApp";
 import { DashApp }           from "@/components/DashApp";
@@ -334,17 +333,6 @@ export const REGISTERED_APPS: AppDefinition[] = [
     allowMultipleWindows: false,
     description:
       "Read and write the device clipboard. Two-way bridge with the browser's clipboard.",
-  },
-  {
-    id: "wifi",
-    title: "Wi-Fi ADB",
-    icon: "📶",
-    Component: WiFiAdbPanel,
-    defaultSize: { width: 520, height: 320 },
-    showInDock: true,
-    launchOnStartup: false,
-    allowMultipleWindows: false,
-    description: "Enable wireless ADB on the connected device.",
   },
   {
     id: "settings",
