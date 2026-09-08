@@ -15,7 +15,7 @@
  * for users who arrive without a device already paired.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { REGISTERED_APPS } from "@/lib/app-registry";
 import { useAdbState, useAdbSession, useAdbSupported } from "@/lib/use-adb";
 import { useConnectActions } from "@/lib/use-connect-actions";
@@ -268,6 +268,99 @@ function WifiConnectModal({ open, onClose }: WifiConnectModalProps) {
   const supported =
     typeof navigator !== "undefined" &&
     typeof navigator.openTCPSocket === "function";
+  const [browserInfo, setBrowserInfo] = useState<{
+    chromeVersion: string | null;
+    fullVersion: string | null;
+    platform: string | null;
+    isChromium: boolean;
+  } | null>(null);
+  const [copiedFlag, setCopiedFlag] = useState(false);
+
+  // Resolve Chrome / Chromium version once when the modal opens.
+  // navigator.userAgentData is the modern API (Chrome 90+) and gives
+  // reliable version info; fall back to parsing navigator.userAgent.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      const uaData = (
+        navigator as Navigator & {
+          userAgentData?: {
+            brands: { brand: string; version: string }[];
+            platform: string;
+            getHighEntropyValues?: (
+              hints: string[],
+            ) => Promise<{ fullVersionList: { brand: string; version: string }[] }>;
+          };
+        }
+      ).userAgentData;
+      let chromeVersion: string | null = null;
+      let fullVersion: string | null = null;
+      let platform: string | null = null;
+      let isChromium = false;
+      if (uaData) {
+        platform = uaData.platform;
+        const chromium = uaData.brands.find(
+          (b) => b.brand === "Chromium" || b.brand === "Google Chrome",
+        );
+        chromeVersion = chromium?.version ?? null;
+        isChromium = !!chromium;
+        try {
+          if (uaData.getHighEntropyValues) {
+            const hi = await uaData.getHighEntropyValues(["fullVersionList"]);
+            const match = hi.fullVersionList.find(
+              (b) => b.brand === "Chromium" || b.brand === "Google Chrome",
+            );
+            fullVersion = match?.version ?? null;
+          }
+        } catch {
+          /* not allowed in this context — fine, brand.version is enough */
+        }
+      }
+      if (!chromeVersion) {
+        // Fallback: parse the legacy UA string. Matches both
+        // "Chrome/150.0.7871.114" and "Edg/150.0.x" etc.
+        const m = navigator.userAgent.match(
+          /(?:Chrome|Chromium|Edg)\/(\d+)/,
+        );
+        if (m) chromeVersion = m[1];
+      }
+      if (!cancelled) {
+        setBrowserInfo({ chromeVersion, fullVersion, platform, isChromium });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  async function copyFlagUrl() {
+    const url = "chrome://flags/#enable-experimental-web-platform-features";
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedFlag(true);
+      window.setTimeout(() => setCopiedFlag(false), 1800);
+    } catch {
+      // Clipboard API can be blocked (insecure context, permissions,
+      // focus). Fall back to a legacy execCommand + a visible URL so
+      // the user can still copy it manually.
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        document.execCommand("copy");
+        setCopiedFlag(true);
+        window.setTimeout(() => setCopiedFlag(false), 1800);
+      } catch {
+        // give up — the URL is still visible on screen
+      } finally {
+        document.body.removeChild(ta);
+      }
+    }
+  }
 
   if (!open) return null;
 
@@ -319,16 +412,11 @@ function WifiConnectModal({ open, onClose }: WifiConnectModalProps) {
           </p>
 
           {!supported && (
-            <div className="banner warn" style={{ marginBottom: 12 }}>
-              Direct Sockets is not available in this browser. To use
-              ADB over Wi-Fi you need Chrome 142+ with the
-              {" "}
-              <code>
-                chrome://flags/#enable-experimental-web-platform-features
-              </code>
-              {" "}
-              flag enabled.
-            </div>
+            <DirectSocketsSetupGuide
+              browserInfo={browserInfo}
+              copiedFlag={copiedFlag}
+              onCopyFlag={copyFlagUrl}
+            />
           )}
 
           <form
@@ -416,6 +504,175 @@ function WifiConnectModal({ open, onClose }: WifiConnectModalProps) {
           </details>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ── DirectSocketsSetupGuide ──────────────────────────────────────────────
+//
+// Shown inside the Wi-Fi modal when navigator.openTCPSocket is not
+// available. The most likely reasons are:
+//   - Browser is not Chrome 142+
+//   - Chrome 142+ but the experimental-web-platform-features flag
+//     has not been enabled (or the browser hasn't been relaunched
+//     since enabling it)
+//   - Page is not cross-origin isolated (would also break here, but
+//     webadb.online is configured for COI)
+//
+// We try to surface which one it is. `browserInfo` gives us the
+// Chrome major version (from navigator.userAgentData); if it's < 142
+// we tell the user to upgrade, otherwise we point at the flag and
+// give them a one-click copy of the chrome://flags URL.
+
+interface DirectSocketsSetupGuideProps {
+  browserInfo: {
+    chromeVersion: string | null;
+    fullVersion: string | null;
+    platform: string | null;
+    isChromium: boolean;
+  } | null;
+  copiedFlag: boolean;
+  onCopyFlag: () => void;
+}
+
+function DirectSocketsSetupGuide({
+  browserInfo,
+  copiedFlag,
+  onCopyFlag,
+}: DirectSocketsSetupGuideProps) {
+  const major = browserInfo?.chromeVersion
+    ? Number.parseInt(browserInfo.chromeVersion, 10)
+    : null;
+  const isChromium = browserInfo?.isChromium ?? false;
+  const tooOld = major !== null && major < 142;
+  const nonChrome = browserInfo !== null && !isChromium;
+
+  return (
+    <div className="banner warn direct-sockets-guide" role="alert">
+      <div className="direct-sockets-guide-header">
+        <strong>Direct Sockets is not available.</strong>
+        {" "}
+        webadb needs the browser's raw TCP socket API to talk to
+        your phone over Wi-Fi.
+      </div>
+
+      <table className="direct-sockets-browserinfo">
+        <tbody>
+          <tr>
+            <th>Browser</th>
+            <td>
+              {browserInfo === null ? (
+                <span className="muted">Detecting…</span>
+              ) : isChromium ? (
+                <>Chromium-based browser</>
+              ) : (
+                <>
+                  Not a Chromium-based browser
+                  {browserInfo.platform
+                    ? ` (${browserInfo.platform})`
+                    : ""}
+                </>
+              )}
+            </td>
+          </tr>
+          <tr>
+            <th>Chrome version</th>
+            <td>
+              {browserInfo === null ? (
+                <span className="muted">Detecting…</span>
+              ) : browserInfo.chromeVersion ? (
+                <>
+                  <span className="mono">
+                    {browserInfo.fullVersion ??
+                      browserInfo.chromeVersion}
+                  </span>
+                  {major !== null && (
+                    <span
+                      className={
+                        tooOld
+                          ? "badge bad"
+                          : "badge ok"
+                      }
+                    >
+                      {tooOld
+                        ? `needs ≥ 142`
+                        : `OK (≥ 142)`}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="muted">unknown</span>
+              )}
+            </td>
+          </tr>
+          <tr>
+            <th>Feature flag</th>
+            <td>
+              <span className="badge bad">off</span>{" "}
+              <code className="mono small">
+                enable-experimental-web-platform-features
+              </code>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+
+      {nonChrome && (
+        <p className="direct-sockets-explainer">
+          Direct Sockets is only available in Chromium-based browsers
+          (Chrome, Edge, Opera, Brave, Arc…). If you're using Firefox
+          or Safari, you'll need to switch to Chrome 142 or later to
+          use ADB over Wi-Fi.
+        </p>
+      )}
+
+      {!nonChrome && tooOld && (
+        <p className="direct-sockets-explainer">
+          Your Chrome is older than 142. Upgrade to a recent Chrome
+          and you'll get Direct Sockets as an experimental feature.
+        </p>
+      )}
+
+      {!nonChrome && !tooOld && (
+        <>
+          <p className="direct-sockets-explainer">
+            Your browser version is recent enough. The Direct Sockets
+            API ships behind a feature flag in stable Chrome — enable
+            it and restart:
+          </p>
+          <ol className="direct-sockets-steps">
+            <li>
+              <strong>Open Chrome's flags page.</strong> We can't link
+              to <code>chrome://…</code> directly (the browser blocks
+              clicks from regular pages), but click the button below
+              to copy the URL, then paste it into Chrome's address
+              bar.
+            </li>
+            <li>
+              Find <em>Experimental Web Platform features</em>,
+              switch it to <strong>Enabled</strong>, then click the
+              blue <strong>Relaunch</strong> button at the bottom.
+            </li>
+            <li>
+              Come back to this page and try <strong>Connect</strong>{" "}
+              again.
+            </li>
+          </ol>
+
+          <div className="direct-sockets-actions">
+            <button
+              type="button"
+              className="primary"
+              onClick={onCopyFlag}
+            >
+              {copiedFlag ? "✓ Copied! Paste in address bar" : "Copy flags URL"}
+            </button>
+            <code className="direct-sockets-flagurl mono small">
+              chrome://flags/#enable-experimental-web-platform-features
+            </code>
+          </div>
+        </>
+      )}
     </div>
   );
 }

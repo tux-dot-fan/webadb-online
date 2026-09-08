@@ -768,6 +768,136 @@ pre {
   border-radius: 3px;
   font-size: 11px;
 }
+
+/* ── Direct Sockets setup guide (shown when API is missing) ──────────── */
+.direct-sockets-guide {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+  text-align: left;
+  background: color-mix(in srgb, #f59e0b 10%, var(--bg-elev));
+  border-color: color-mix(in srgb, #f59e0b 35%, var(--border));
+}
+.direct-sockets-guide-header {
+  font-size: 13px;
+}
+.direct-sockets-browserinfo {
+  border-collapse: collapse;
+  font-size: 12px;
+  width: 100%;
+  background: var(--bg);
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+}
+.direct-sockets-browserinfo th,
+.direct-sockets-browserinfo td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.direct-sockets-browserinfo tr:last-child th,
+.direct-sockets-browserinfo tr:last-child td {
+  border-bottom: none;
+}
+.direct-sockets-browserinfo th {
+  width: 110px;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: var(--bg-elev);
+}
+.direct-sockets-browserinfo .mono {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+.direct-sockets-browserinfo .mono.small {
+  font-size: 11px;
+}
+.direct-sockets-browserinfo .badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  margin-left: 6px;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.direct-sockets-browserinfo .badge.ok {
+  background: color-mix(in srgb, var(--success, #34c759) 22%, transparent);
+  color: color-mix(in srgb, var(--success, #34c759) 90%, black);
+}
+.direct-sockets-browserinfo .badge.bad {
+  background: color-mix(in srgb, #ff3b30 22%, transparent);
+  color: color-mix(in srgb, #ff3b30 92%, black);
+}
+.direct-sockets-explainer {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.direct-sockets-steps {
+  margin: 0;
+  padding-left: 22px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.direct-sockets-steps li {
+  margin-bottom: 6px;
+}
+.direct-sockets-steps code {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 11px;
+}
+.direct-sockets-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.direct-sockets-actions button {
+  padding: 7px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.direct-sockets-actions button:hover {
+  filter: brightness(1.06);
+}
+.direct-sockets-flagurl {
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  word-break: break-all;
+}
+.banner-dismiss {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.6;
+}
+.banner-dismiss:hover {
+  opacity: 1;
+}
 .wifi-modal-steps {
   margin: 0 0 14px;
   padding-left: 22px;
