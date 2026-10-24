@@ -17,7 +17,7 @@ refresh by inches. `is_released` flipped from `false` to `true`, the active
 stage's `desktop_first` populated to **158**, and the mirror at
 chromestatuslite now renders the row as *"Enabled by default (Chrome
 158)"*. Chrome 158 goes stable on **2026-11-17**. This is the row that the
-[Oct 12 post](https://webadb.online/blog/2026/10/12/monday-recheck-ssm-direct-sockets-revert-chromium-3076e5f5/)
+[Oct 12 post](https://webadb.online/blog/2026/10/12/2026-10-12-monday-recheck-ssm-direct-sockets-revert-chromium-3076e5f5/)
 told readers to watch, because it was the one chromestatus surface that
 had gone stale in a way the surrounding Monday series had never
 distinguished: the SSM implementation had been reverted out of the
@@ -29,7 +29,7 @@ release that is three and a half weeks out. The revert is history.
 The re-land itself was nine CLs over three days, landing in `main` between
 2026-10-19 and 2026-10-21 — squarely inside the 24-hour window this post
 covers, and only hours after the [Oct 19
-post](https://webadb.online/blog/2026/10/19/monday-recheck-chromestatus-still-frozen-but-tree-has-cleaned-up-direct-sockets-private/)
+post](https://webadb.online/blog/2026/10/19/2026-10-19-monday-recheck-chromestatus-still-frozen-but-tree-has-cleaned-up-direct-sockets-private/)
 described the tree as "unwinding" the Direct Sockets Private Network
 Access layer.
 
