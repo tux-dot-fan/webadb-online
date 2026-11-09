@@ -24,7 +24,13 @@ export function ApkInstallPanel({ session }: Props) {
     try {
       const buf = new Uint8Array(await f.arrayBuffer());
       setProgress(`Pushing ${f.name}…`);
-      const remotePath = `/data/local/tmp/${f.name.replace(/[^A-Za-z0-9._-]/g, "_")}`;
+      // Sanitize the filename for the device path and make sure it
+      // still ends in .apk — `pm install` is happier with a proper
+      // extension, and some devices reject anything else outright.
+      const safeName = f.name.replace(/[^A-Za-z0-9._-]/g, "_");
+      const remotePath = `/data/local/tmp/${
+        safeName.toLowerCase().endsWith(".apk") ? safeName : `${safeName}.apk`
+      }`;
       await session.adb.sync.write({
         filename: remotePath,
         // `file` accepts a Web ReadableStream<MaybeConsumable<Uint8Array>>.
@@ -42,14 +48,95 @@ export function ApkInstallPanel({ session }: Props) {
       if (!shell || !shell.isSupported) {
         throw new Error("Device doesn't support Shell V2 protocol");
       }
-      const result = shell.spawn(["pm", "install", "-r", "-t", remotePath]);
+
+      // Dump the device's own `pm install --help` once per session. The
+      // supported flag set varies across Android versions and OEM skins
+      // (HyperOS in particular), and reading it beats guessing. The
+      // output is attached to any failure so the user can see exactly
+      // which flags their build accepts.
+      let helpText = "";
+      try {
+        const helpRes = await shell.spawn(["pm", "install", "--help"]).wait();
+        helpText = (await helpRes.stdout.toString()).trim();
+      } catch {
+        /* some builds reject --help outright — fine */
+      }
+
+      // Flags:
+      //   -r  replace an existing installation (keep data)
+      //   -t  allow an APK marked android:testOnly="true"
+      //   -d  allow a version downgrade (INSTALL_FAILED_VERSION_DOWNGRADE)
+      //   -g  grant every runtime permission at install time
+      //   --user 0  install for the primary user
+      // Note: we deliberately do NOT pass -s. `-s` means "install on shared
+      // storage", which Android 11+ rejects for third-party APKs
+      // (INSTALL_FAILED_INVALID_INSTALL_LOCATION) and which puts the app
+      // in a place the launcher doesn't index.
+      const installArgs = [
+        "pm", "install",
+        "-r",
+        "-t",
+        "-d",
+        "-g",
+        "--user", "0",
+        remotePath,
+      ];
+      const result = shell.spawn(installArgs);
       const waitResult = await result.wait();
-      const stdout = await waitResult.stdout.toString();
+      let stdout = await waitResult.stdout.toString();
+      let stderr = await waitResult.stderr.toString();
+
+      // Some devices reject `--user 0` or `-g` in combination with other
+      // flags even though each one is valid on its own. If the full flag
+      // set failed, retry with the bare minimum that matches a plain
+      // `adb shell pm install -r <path>` on the command line.
+      let usedArgs = installArgs;
+      if (waitResult.exitCode !== 0 && !/Success/i.test(stdout)) {
+        setProgress("Install failed with extended flags — retrying minimally…");
+        const fallbackArgs = ["pm", "install", "-r", remotePath];
+        const retry = shell.spawn(fallbackArgs);
+        const retryResult = await retry.wait();
+        const retryOut = await retryResult.stdout.toString();
+        const retryErr = await retryResult.stderr.toString();
+        if (retryResult.exitCode === 0 && /Success/i.test(retryOut)) {
+          usedArgs = fallbackArgs;
+          stdout = retryOut;
+          stderr = retryErr;
+        } else {
+          // Keep the original error but mention the retry also failed.
+          stderr =
+            `${stderr}\n(retry with ${fallbackArgs.join(" ")} also failed: ` +
+            `${(retryOut.trim() || retryErr.trim() || "no output")})`;
+        }
+      }
+
       if (waitResult.exitCode !== 0 || !/Success/i.test(stdout)) {
-        const stderr = await waitResult.stderr.toString();
+        // `pm install` reports failures on stdout, not stderr, and the
+        // useful part is the INSTALL_FAILED_* token. Surface the whole
+        // output plus a stat of the staged file so the user can tell
+        // "the APK is bad" from "the device can't read the file".
+        let statOut = "";
+        try {
+          const statRes = await shell
+            .spawn(["ls", "-lZ", remotePath])
+            .wait();
+          statOut = await statRes.stdout.toString();
+        } catch {
+          /* best effort */
+        }
         throw new Error(
-          `pm install returned exit ${waitResult.exitCode}:\n` +
-            (stdout.trim() || stderr.trim() || "(no output)"),
+          `pm install failed (exit ${waitResult.exitCode})\n\n` +
+            `Command: ${usedArgs.join(" ")}\n\n` +
+            `Output:\n${(stdout.trim() || stderr.trim() || "(no output)")}\n` +
+            (statOut.trim() ? `\nStaged file:\n${statOut.trim()}` : "") +
+            (helpText
+              ? `\n\nThis device supports these pm install flags:\n${helpText}`
+              : "") +
+            `\n\nIf this says INSTALL_PARSE_FAILED_NO_COLLECTED_CERTIFICATES ` +
+            `the staged file may be truncated or unreadable — try a ` +
+            `different APK. If it says INSTALL_FAILED_UPDATE_INCOMPATIBLE ` +
+            `the signing key differs from the installed app — uninstall ` +
+            `it first.`,
         );
       }
       setLast(`Installed ${f.name} → ${stdout.trim()}`);
@@ -70,7 +157,10 @@ export function ApkInstallPanel({ session }: Props) {
       <p className="panel-desc">
         Pick a <code>.apk</code> from your computer. It streams over USB to{" "}
         <code>/data/local/tmp</code>, then <code>pm install</code> runs on the device.
-        Existing apps are replaced (<code>-r</code>) and test-only APKs allowed (<code>-t</code>).
+        Flags used: <code>-r</code> (replace existing, keep data), <code>-t</code>
+        (allow test-only APKs), <code>-d</code> (allow downgrade), <code>-g</code>
+        (grant runtime permissions), <code>--user 0</code>. If that fails the
+        installer retries with a bare <code>pm install -r</code>.
       </p>
 
       <div className="row" style={{ marginBottom: 12 }}>
