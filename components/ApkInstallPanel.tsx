@@ -2,6 +2,7 @@
 
 import { useState, type ChangeEvent } from "react";
 import type { AdbSession } from "@/lib/adb-client";
+import { extractPackageNameFromApkAsync } from "@/lib/apk-package-name";
 
 interface Props {
   session: AdbSession;
@@ -107,8 +108,15 @@ export function ApkInstallPanel({ session }: Props) {
         // `pm install` printing "Success" has not always meant the
         // package landed — verify against the package manager's own
         // listing before we tell the user it worked.
+        //
+        // To check we need the package name, and we can't guess it:
+        // after installation the APK lives at
+        // /data/app/<random>/<pkg>-<hash>/base.apk, so the original
+        // filename appears nowhere in the installed path. We read the
+        // name straight out of the APK's binary AndroidManifest.xml
+        // (in the browser, no device tools required).
         setProgress("Verifying installation…");
-        const pkgName = await readPackageName(shell, remotePath);
+        const pkgName = await extractPackageNameFromApkAsync(buf);
         let verified = false;
         if (pkgName) {
           const list = await shell
@@ -119,15 +127,18 @@ export function ApkInstallPanel({ session }: Props) {
         }
         if (verified) {
           setLast(
-            `Installed ${f.name}${pkgName ? ` (${pkgName})` : ""} → ` +
-              streamOut.trim(),
+            `Installed ${f.name} (${pkgName}) → ${streamOut.trim()}`,
+          );
+        } else if (pkgName) {
+          setLast(
+            `pm install said "${streamOut.trim()}" but ${pkgName} was not ` +
+              `found in the package list afterwards. The APK may be a ` +
+              `split/instant app, or the install was rejected silently.`,
           );
         } else {
           setLast(
-            `pm install reported "${streamOut.trim()}" but the package ` +
-              `was NOT found in the package list afterwards. ` +
-              `The APK may be a split/instant app, or the install was ` +
-              `rejected silently.`,
+            `Installed ${f.name} → ${streamOut.trim()}. (Could not read the ` +
+              `package name from the manifest to double-check the install.)`,
           );
         }
         setProgress(null);
@@ -314,43 +325,6 @@ export function ApkInstallPanel({ session }: Props) {
       )}
     </section>
   );
-}
-
-/**
- * Best-effort: figure out the package name of a staged APK so we can
- * verify the install actually landed.
- *
- * `aapt2 dump badging` is the proper tool but isn't present on every
- * device (it ships from API 24 and is often missing from OEM images).
- * Fall back to `pm list packages -f` — the `-f` form prints
- * "package:/data/app/.../base.apk=com.example.app", and we can match
- * on the APK's basename. That's imprecise but good enough for a
- * post-install sanity check.
- */
-async function readPackageName(
-  shell: NonNullable<
-    AdbSession["adb"]["subprocess"]["shellProtocol"]
-  >,
-  remotePath: string,
-): Promise<string | null> {
-  const base = remotePath.split("/").pop() ?? "";
-  const stem = base.replace(/\.apk$/i, "");
-  if (!stem) return null;
-  try {
-    const list = await shell
-      .spawn(["pm", "list", "packages", "-f"])
-      .wait()
-      .toString();
-    const out = list.stdout ?? "";
-    // Look for a package whose installed APK path contains our stem.
-    for (const line of out.split("\n")) {
-      const m = line.match(/^package:(.*)=(\S+)$/);
-      if (m && m[1].includes(stem)) return m[2];
-    }
-  } catch {
-    /* fall through */
-  }
-  return null;
 }
 
 function formatBytes(n: number): string {

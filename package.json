@@ -11,7 +11,8 @@
     "build": "npm run blog:clean && npm run blog:build && next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx lib/apk-package-name.test.ts"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.11.0",
