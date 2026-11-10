@@ -212,9 +212,13 @@ export function ClipboardPanel({ session }: Props) {
         let lastError = "";
         for (const attempt of attempts) {
           const r = shell.spawn(attempt.argv);
-          const waitResult = await r.wait();
-          const stdout = await waitResult.stdout.toString();
-          const stderr = await waitResult.stderr.toString();
+          // `.wait().toString()` decodes UTF-8. Using `.wait()` alone
+          // and then calling `.stdout.toString()` invokes
+          // Uint8Array.prototype.toString(), which returns a
+          // comma-separated list of byte values instead of text.
+          const waitResult = await r.wait().toString();
+          const stdout = waitResult.stdout ?? "";
+          const stderr = waitResult.stderr ?? "";
           if (waitResult.exitCode === 0) {
             setWriteDetail(
               `Wrote ${sanitized.length} chars to device clipboard ` +

@@ -744,8 +744,11 @@ function FilesTab({ session, adb, kind, onRunCommand }: FilesTabProps) {
         ? await (async () => {
             const shell = session.adb.subprocess.shellProtocol!;
             const proc = shell.spawn(["stat", e.path]);
-            const r = await proc.wait();
-            return (await r.stdout.toString()) + (await r.stderr.toString());
+            // `.wait().toString()` decodes UTF-8 — calling
+            // `.toString()` on the raw Uint8Array stdout instead would
+            // print "114,111,111,116,..." instead of the stat output.
+            const r = await proc.wait().toString();
+            return (r.stdout ?? "") + (r.stderr ?? "");
           })()
         : "";
       alert(

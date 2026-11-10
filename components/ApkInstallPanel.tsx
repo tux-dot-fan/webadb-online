@@ -56,8 +56,16 @@ export function ApkInstallPanel({ session }: Props) {
       // which flags their build accepts.
       let helpText = "";
       try {
-        const helpRes = await shell.spawn(["pm", "install", "--help"]).wait();
-        helpText = (await helpRes.stdout.toString()).trim();
+        // `.wait().toString()` — NOT `.wait()` then `.stdout.toString()`.
+        // The former decodes UTF-8 for us; the latter calls
+        // Uint8Array.prototype.toString() and yields a comma-separated
+        // list of byte values ("83,117,99,99,101,115,115,10" instead of
+        // "Success\n").
+        const helpRes = await shell
+          .spawn(["pm", "install", "--help"])
+          .wait()
+          .toString();
+        helpText = (helpRes.stdout || "").trim();
       } catch {
         /* some builds reject --help outright — fine */
       }
@@ -81,10 +89,11 @@ export function ApkInstallPanel({ session }: Props) {
         "--user", "0",
         remotePath,
       ];
-      const result = shell.spawn(installArgs);
-      const waitResult = await result.wait();
-      let stdout = await waitResult.stdout.toString();
-      let stderr = await waitResult.stderr.toString();
+      // `.wait().toString()` gives us decoded UTF-8 strings. See the
+      // comment on helpText above for why the order matters.
+      const waitResult = await shell.spawn(installArgs).wait().toString();
+      let stdout = waitResult.stdout ?? "";
+      let stderr = waitResult.stderr ?? "";
 
       // Some devices reject `--user 0` or `-g` in combination with other
       // flags even though each one is valid on its own. If the full flag
@@ -94,10 +103,12 @@ export function ApkInstallPanel({ session }: Props) {
       if (waitResult.exitCode !== 0 && !/Success/i.test(stdout)) {
         setProgress("Install failed with extended flags — retrying minimally…");
         const fallbackArgs = ["pm", "install", "-r", remotePath];
-        const retry = shell.spawn(fallbackArgs);
-        const retryResult = await retry.wait();
-        const retryOut = await retryResult.stdout.toString();
-        const retryErr = await retryResult.stderr.toString();
+        const retryResult = await shell
+          .spawn(fallbackArgs)
+          .wait()
+          .toString();
+        const retryOut = retryResult.stdout ?? "";
+        const retryErr = retryResult.stderr ?? "";
         if (retryResult.exitCode === 0 && /Success/i.test(retryOut)) {
           usedArgs = fallbackArgs;
           stdout = retryOut;
@@ -119,8 +130,9 @@ export function ApkInstallPanel({ session }: Props) {
         try {
           const statRes = await shell
             .spawn(["ls", "-lZ", remotePath])
-            .wait();
-          statOut = await statRes.stdout.toString();
+            .wait()
+            .toString();
+          statOut = statRes.stdout ?? "";
         } catch {
           /* best effort */
         }
