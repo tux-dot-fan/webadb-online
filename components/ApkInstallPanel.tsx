@@ -49,6 +49,99 @@ export function ApkInstallPanel({ session }: Props) {
         throw new Error("Device doesn't support Shell V2 protocol");
       }
 
+      // ─────────────────────────────────────────────────────────────────────
+      // Strategy: stream the APK into `pm install` over stdin first.
+      //
+      // `pm install <path>` (the path form) is deprecated. It asks
+      // PackageManager — running as system_server — to open the file
+      // itself. On modern Android that read is subject to SELinux and
+      // to the file's ownership/context, and when it silently yields
+      // nothing PackageManager can print "Success" while installing
+      // nothing at all. Google's own guidance (issue 80270303,
+      // closed as "Intended Behavior") is that the supported forms are
+      //   1. host-side `adb install` (streams via install-write /
+      //      install-commit), or
+      //   2. `cat file.apk | pm install -S <size>` on the device.
+      //
+      // Form 2 is what we can reach: we pipe the file into pm's stdin
+      // and tell pm how many bytes to expect. The read happens in the
+      // shell pipeline, so no cross-process file-open permission is
+      // involved and no path-based parsing happens at all.
+      //
+      // We keep the path form as a fallback because some OEM builds
+      // still only accept it.
+      // ─────────────────────────────────────────────────────────────────────
+      const apkSize = buf.byteLength;
+      const streamingArgs = [
+        "pm", "install",
+        "-S", String(apkSize),
+        "-r", "-t", "-d", "-g", "--user", "0",
+      ];
+      let streamFailure = "";
+      let streamOut = "";
+      let streamErr = "";
+      let streamExit: number | null = null;
+      try {
+        // `shell.spawn()` returns a lazy promise that is BOTH the process
+        // (awaitable → AdbShellProtocolProcess with .stdin) and a Wait
+        // helper (→ .wait()). Keep the promise so we can use .wait() on
+        // it while awaiting it for .stdin.
+        const spawnPromise = shell.spawn(streamingArgs);
+        const proc = await spawnPromise;
+        // Feed the APK into pm's stdin. `pm install -S <n>` reads exactly
+        // n bytes from stdin. Writing through the shell protocol's stdin
+        // stream means the bytes never touch the filesystem as far as
+        // PackageManager is concerned — no SELinux file-read permission
+        // required, no path parsing, no truncated-file ambiguity.
+        const writer = proc.stdin.getWriter();
+        await writer.write(buf);
+        await writer.close();
+        const streamResult = await spawnPromise.wait().toString();
+        streamExit = streamResult.exitCode;
+        streamOut = streamResult.stdout ?? "";
+        streamErr = streamResult.stderr ?? "";
+      } catch (e) {
+        streamFailure = e instanceof Error ? e.message : String(e);
+      }
+      if (streamExit === 0 && /Success/i.test(streamOut)) {
+        // `pm install` printing "Success" has not always meant the
+        // package landed — verify against the package manager's own
+        // listing before we tell the user it worked.
+        setProgress("Verifying installation…");
+        const pkgName = await readPackageName(shell, remotePath);
+        let verified = false;
+        if (pkgName) {
+          const list = await shell
+            .spawn(["pm", "list", "packages", pkgName])
+            .wait()
+            .toString();
+          verified = (list.stdout ?? "").includes(pkgName);
+        }
+        if (verified) {
+          setLast(
+            `Installed ${f.name}${pkgName ? ` (${pkgName})` : ""} → ` +
+              streamOut.trim(),
+          );
+        } else {
+          setLast(
+            `pm install reported "${streamOut.trim()}" but the package ` +
+              `was NOT found in the package list afterwards. ` +
+              `The APK may be a split/instant app, or the install was ` +
+              `rejected silently.`,
+          );
+        }
+        setProgress(null);
+        shell.spawn(["rm", "-f", remotePath]).wait().catch(() => {});
+        return;
+      }
+      // Streaming install failed — fall through to the path form and
+      // report both results if that fails too.
+      if (!streamFailure) {
+        streamFailure = (
+          streamOut.trim() || streamErr.trim() || "(no output)"
+        ).trim();
+      }
+
       // Dump the device's own `pm install --help` once per session. The
       // supported flag set varies across Android versions and OEM skins
       // (HyperOS in particular), and reading it beats guessing. The
@@ -138,6 +231,9 @@ export function ApkInstallPanel({ session }: Props) {
         }
         throw new Error(
           `pm install failed (exit ${waitResult.exitCode})\n\n` +
+            (streamFailure
+              ? `Streaming install (pm install -S <size>) also failed:\n${streamFailure}\n\n`
+              : "") +
             `Command: ${usedArgs.join(" ")}\n\n` +
             `Output:\n${(stdout.trim() || stderr.trim() || "(no output)")}\n` +
             (statOut.trim() ? `\nStaged file:\n${statOut.trim()}` : "") +
@@ -218,6 +314,43 @@ export function ApkInstallPanel({ session }: Props) {
       )}
     </section>
   );
+}
+
+/**
+ * Best-effort: figure out the package name of a staged APK so we can
+ * verify the install actually landed.
+ *
+ * `aapt2 dump badging` is the proper tool but isn't present on every
+ * device (it ships from API 24 and is often missing from OEM images).
+ * Fall back to `pm list packages -f` — the `-f` form prints
+ * "package:/data/app/.../base.apk=com.example.app", and we can match
+ * on the APK's basename. That's imprecise but good enough for a
+ * post-install sanity check.
+ */
+async function readPackageName(
+  shell: NonNullable<
+    AdbSession["adb"]["subprocess"]["shellProtocol"]
+  >,
+  remotePath: string,
+): Promise<string | null> {
+  const base = remotePath.split("/").pop() ?? "";
+  const stem = base.replace(/\.apk$/i, "");
+  if (!stem) return null;
+  try {
+    const list = await shell
+      .spawn(["pm", "list", "packages", "-f"])
+      .wait()
+      .toString();
+    const out = list.stdout ?? "";
+    // Look for a package whose installed APK path contains our stem.
+    for (const line of out.split("\n")) {
+      const m = line.match(/^package:(.*)=(\S+)$/);
+      if (m && m[1].includes(stem)) return m[2];
+    }
+  } catch {
+    /* fall through */
+  }
+  return null;
 }
 
 function formatBytes(n: number): string {

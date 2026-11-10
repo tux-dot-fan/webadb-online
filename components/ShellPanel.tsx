@@ -100,6 +100,10 @@ const DEFAULT_COMMANDS: SavedCommand[] = [
   { id: "c-top",        label: "Top (3 ticks)",        command: "top -b -n 3 -d 1 | tail -n 20" },
   { id: "c-env",        label: "Env (PATH)",           command: "echo \"PATH=$PATH\"" },
   { id: "c-getprop",    label: "Device props",         command: "getprop ro.product.model ro.build.version.release ro.product.cpu.abi" },
+  { id: "c-pmflags",    label: "pm install flags",      command: "pm install --help 2>&1 | head -n 40" },
+  { id: "c-tmplist",    label: "Staged APKs in /tmp",   command: "ls -l /data/local/tmp/*.apk 2>&1" },
+  { id: "c-tmpstaged",  label: "Check staged APK size",  command: "ls -l /data/local/tmp/xiuxin-app-v0.5.0-glide-optimized.apk 2>&1; stat -c %s /data/local/tmp/xiuxin-app-v0.5.0-glide-optimized.apk 2>&1" },
+  { id: "c-checkapp",   label: "Is app installed?",     command: "pm list packages | grep -i xiuxin" },
 ];
 
 const SCRIPTS_DIR = "/data/local/tmp/webadb/scripts";
