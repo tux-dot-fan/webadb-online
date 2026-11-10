@@ -75,7 +75,7 @@ export function ApkInstallPanel({ session }: Props) {
       const streamingArgs = [
         "pm", "install",
         "-S", String(apkSize),
-        "-r", "-t", "-d", "-g", "--user", "0",
+        "-r", "-t", "-d", "-g",
       ];
       let streamFailure = "";
       let streamOut = "";
@@ -179,7 +179,6 @@ export function ApkInstallPanel({ session }: Props) {
         "-t",
         "-d",
         "-g",
-        "--user", "0",
         remotePath,
       ];
       // `.wait().toString()` gives us decoded UTF-8 strings. See the
@@ -267,8 +266,9 @@ export function ApkInstallPanel({ session }: Props) {
         <code>/data/local/tmp</code>, then <code>pm install</code> runs on the device.
         Flags used: <code>-r</code> (replace existing, keep data), <code>-t</code>
         (allow test-only APKs), <code>-d</code> (allow downgrade), <code>-g</code>
-        (grant runtime permissions), <code>--user 0</code>. If that fails the
-        installer retries with a bare <code>pm install -r</code>.
+        (grant runtime permissions). The APK is streamed into{" "}
+        <code>pm install -S</code> over stdin; if that fails the installer
+        retries with the path form and then a bare <code>pm install -r</code>.
       </p>
 
       <div className="row" style={{ marginBottom: 12 }}>
